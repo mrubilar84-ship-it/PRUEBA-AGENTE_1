@@ -243,7 +243,8 @@ class _Resp:
 
 
 class _GErr(Exception):
-    def __init__(self, code): self.code = code
+    def __init__(self, code, msg=""):
+        super().__init__(msg); self.code = code
 
 
 class _GClient:
@@ -347,3 +348,44 @@ def test_gemini_404_con_modelo_explicito_no_se_cambia():
         llm.generate_text("s", "u"); assert False
     except RuntimeError as e:
         assert "mi-modelo" in str(e) and llm.model == "mi-modelo"
+
+
+class _GModel:
+    def __init__(self, n): self.name, self.supported_actions = "models/" + n, ["generateContent"]
+
+
+QUOTA_MSG = "You exceeded your current quota... limit: 20, model: gemini-3.8-flash Please retry in 1h1m23.951924311s."
+
+
+def test_gemini_cuota_diaria_cambia_a_otro_modelo(monkeypatch):
+    monkeypatch.setattr(G.time, "sleep", lambda s: pytest_fail("no debe dormir 1 hora"))
+    c = _GClient([_GErr(429, QUOTA_MSG), "listo"])
+    c.list = lambda: [_GModel("gemini-3.8-flash"), _GModel("gemini-3.8-flash-lite"), _GModel("gemini-3.5-flash")]
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    llm = G.GeminiLLM(client=c)
+    assert llm.generate_text("s", "u") == "listo"
+    assert llm.model == "gemini-3.5-flash"  # flash normal antes que lite
+    assert [x[0] for x in c.calls] == ["gemini-3.8-flash", "gemini-3.5-flash"]
+
+
+def pytest_fail(msg):
+    raise AssertionError(msg)
+
+
+def test_gemini_cuota_sin_alternativa_o_modelo_fijo_da_error_claro():
+    c = _GClient([_GErr(429, QUOTA_MSG)])
+    c.list = lambda: [_GModel("gemini-3.8-flash")]  # sin otro modelo
+    for llm in (G.GeminiLLM(client=c), G.GeminiLLM(client=_GClient([_GErr(429, QUOTA_MSG)]), model="fijo")):
+        try:
+            llm.generate_text("s", "u"); assert False
+        except RuntimeError as e:
+            assert "1 h 1 min" in str(e) and "facturación" in str(e)
+    assert llm.model == "fijo"
+
+
+def test_retry_seconds_y_humanize():
+    assert abs(G._retry_seconds(Exception("Please retry in 1h1m23.9s.")) - 3683.9) < 0.01
+    assert G._retry_seconds(Exception("Please retry in 7s")) == 7
+    assert G._retry_seconds(Exception("{'retryDelay': '34s'}")) == 34
+    assert G._retry_seconds(Exception("otro error")) is None
+    assert G._humanize(3683) == "1 h 1 min" and G._humanize(125) == "2 min" and G._humanize(40) == "40 s"

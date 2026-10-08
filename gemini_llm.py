@@ -33,6 +33,24 @@ _HINTS = {
 }
 
 
+def _retry_seconds(e) -> float | None:
+    """Segundos que Gemini pide esperar («Please retry in 1h1m23.9s» / retryDelay: '3s'), si los indica."""
+    txt = str(e)
+    m = re.search(r"retry in\s*(?:(\d+)h)?\s*(?:(\d+)m)?\s*(?:([\d.]+)s)?", txt, re.I)
+    if m and any(m.groups()):
+        h, mi, sec = (float(x) if x else 0.0 for x in m.groups())
+        return h * 3600 + mi * 60 + sec
+    m = re.search(r"retryDelay['\"]?\s*:\s*['\"]?(\d+(?:\.\d+)?)s", txt)
+    return float(m.group(1)) if m else None
+
+
+def _humanize(sec: float) -> str:
+    sec = int(sec)
+    h, rest = divmod(sec, 3600)
+    mi = rest // 60
+    return f"{h} h {mi} min" if h else (f"{mi} min" if mi else f"{sec} s")
+
+
 class GeminiLLM:
     native_pdf = False  # el agente extrae el texto del PDF; las imágenes de planos van aparte
     vision = True
@@ -44,6 +62,7 @@ class GeminiLLM:
                  max_output_tokens: int = 16000, retries: int = 6, parse_retries: int = 2):
         self._auto_model = not model and not os.environ.get("GEMINI_MODEL")  # modelo por defecto: se puede sustituir
         self.model = model or os.environ.get("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
+        self._tried = {self.model}
         self.max_output_tokens, self.retries, self.parse_retries = max_output_tokens, retries, parse_retries
         if client is None:
             from google import genai
@@ -64,15 +83,31 @@ class GeminiLLM:
                 out.append(m.name.replace("models/", ""))
         return out
 
-    def _pick_fallback(self) -> str | None:
-        """Mejor modelo «flash» disponible: el de versión más alta, prefiriendo los estables a preview/exp."""
-        skip = ("lite", "image", "tts", "audio", "live", "embed", "robotics", "computer", "veo", "imagen")
-        names = [n for n in self.list_models() if "flash" in n and not any(x in n for x in skip)]
+    def _candidates(self) -> list[str]:
+        """Otros modelos «flash» disponibles, de mejor a peor opción (cada modelo tiene su propia cuota gratuita)."""
+        skip = ("image", "tts", "audio", "live", "embed", "robotics", "computer", "veo", "imagen")
+        try:
+            names = [n for n in self.list_models() if "flash" in n and not any(x in n for x in skip)
+                     and n not in self._tried]
+        except Exception:
+            return []
 
         def key(n):
             v = re.search(r"gemini-(\d+(?:\.\d+)?)", n)
-            return (0 if re.search(r"preview|exp", n) else 1, float(v.group(1)) if v else 0, -len(n))
-        return max(names, key=key) if names else None
+            return ("lite" in n, bool(re.search(r"preview|exp", n)), -(float(v.group(1)) if v else 0), len(n))
+        return sorted(names, key=key)
+
+    def _switch_model(self, why: str) -> bool:
+        """Cambia a otro modelo disponible si el modelo no fue fijado por el usuario."""
+        if not self._auto_model:
+            return False
+        alts = self._candidates()
+        if not alts:
+            return False
+        print(f"  {why}; uso «{alts[0]}».")
+        self.model = alts[0]
+        self._tried.add(self.model)
+        return True
 
     def check(self) -> str:
         """Prueba rápida de conexión (clave, modelo y cuota) antes de procesar documentos."""
@@ -86,8 +121,8 @@ class GeminiLLM:
             system_instruction=system, temperature=0.2, max_output_tokens=self.max_output_tokens,
             response_mime_type="application/json" if json_mode else None,
         )
-        delay = 5.0
-        for attempt in range(self.retries + 1):
+        delay, attempt = 5.0, 0
+        while True:
             try:
                 resp = self.client.models.generate_content(model=self.model, contents=parts, config=config)
                 if not resp.text:
@@ -95,18 +130,25 @@ class GeminiLLM:
                 return resp.text
             except Exception as e:
                 code = getattr(e, "code", None)
+                wait = _retry_seconds(e) if code == 429 else None
+                if code == 429 and wait and wait > 90:
+                    # Cuota agotada (p. ej. 20 peticiones/día en el plan gratuito): esperar segundos no sirve.
+                    if self._switch_model(f"Cuota agotada en «{self.model}» (vuelve en ≈ {_humanize(wait)})"):
+                        continue
+                    raise RuntimeError(
+                        f"Gemini: se agotó la cuota gratuita del modelo «{self.model}»; vuelve a estar disponible en "
+                        f"≈ {_humanize(wait)}.\nDetalle: {getattr(e, 'message', None) or e}\n"
+                        "Opciones: esperar, probar otro modelo (llm.list_models(); GeminiLLM('nombre')), o activar "
+                        "facturación en Google AI Studio (se puede fijar un límite de gasto).") from e
                 if code in (429, 500, 502, 503, 504) and attempt < self.retries:
-                    print(f"  Gemini {code}: reintento en {delay:.0f}s (límite del plan gratuito o saturación)")
-                    time.sleep(delay)
+                    attempt += 1
+                    pause = (wait + 1) if wait else delay
+                    print(f"  Gemini {code}: reintento en {pause:.0f}s (límite del plan gratuito o saturación)")
+                    time.sleep(pause)
                     delay = min(delay * 2, 90)
                     continue
-                if code == 404 and self._auto_model:
-                    self._auto_model = False  # solo un intento de sustitución
-                    alt = self._pick_fallback()
-                    if alt and alt != self.model:
-                        print(f"  El modelo «{self.model}» no está disponible; uso «{alt}».")
-                        self.model = alt
-                        continue
+                if code == 404 and self._switch_model(f"El modelo «{self.model}» no está disponible"):
+                    continue
                 if code is not None:
                     raise RuntimeError(f"Gemini devolvió el error {code} con el modelo «{self.model}»: "
                                        f"{getattr(e, 'message', None) or e}\n{_HINTS.get(code, '')}") from e

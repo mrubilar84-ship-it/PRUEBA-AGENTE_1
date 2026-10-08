@@ -279,8 +279,8 @@ def test_gemini_texto_y_error_no_reintentable():
     bad = G.GeminiLLM(client=_GClient([_GErr(400)]))
     try:
         bad.generate_text("s", "u"); assert False
-    except _GErr:
-        pass
+    except RuntimeError as e:  # 400 no se reintenta: se envuelve con una pista
+        assert "400" in str(e) and bad.client.calls and len(bad.client.calls) == 1
 
 
 def test_gemini_sin_clave(monkeypatch):

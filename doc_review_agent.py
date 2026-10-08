@@ -26,7 +26,7 @@ except ImportError:  # el backend local no necesita el SDK de Anthropic
 
 DEFAULT_MODEL = "claude-opus-5-5"
 DEFAULT_CHECKLIST = Path(__file__).with_name("checklist_default.md")
-SUPPORTED = {".pdf", ".docx", ".xlsx", ".xlsm", ".csv", ".txt", ".md"}
+SUPPORTED = {".pdf", ".docx", ".xlsx", ".xlsm", ".csv", ".txt", ".md", ".png", ".jpg", ".jpeg", ".tif", ".tiff"}
 MAX_PDF_BYTES = 30 * 1024 * 1024  # límite de la API: 32 MB por request
 
 SEVERITIES = ["critica", "mayor", "menor", "observacion"]
@@ -110,6 +110,11 @@ class ReviewConfig:
     extra_instructions: str = ""  # contexto del proyecto, norma aplicable, etc.
     cross_check: bool = True
     use_fallbacks: bool = True  # fallback server-side ante rechazos por clasificadores
+    # --- planos (PDF impresos desde CAD / imágenes)
+    plan_mode: str = "auto"  # auto: PDF de formato ≥ A3 o con nombre de plano | always | never
+    plan_checklist_path: Path = Path(__file__).with_name("checklist_planos.md")
+    plan_tiles: bool = True  # además de la vista general y el cajetín, revisar 4 cuadrantes ampliados
+    plan_max_pages: int = 20  # tope de hojas por PDF
 
 
 @dataclass
@@ -174,6 +179,8 @@ def load_document(path: str | Path, native_pdf: bool = True) -> LoadedDoc:
     """native_pdf=True envía el PDF a Claude; False extrae texto (para modelos locales)."""
     path = Path(path)
     ext = path.suffix.lower()
+    if ext in {".png", ".jpg", ".jpeg", ".tif", ".tiff"}:
+        raise ValueError(f"{path.name} es una imagen: se revisa como plano (plan_review) o con chat.ask_image().")
     if ext not in SUPPORTED:
         raise ValueError(f"Formato no soportado: {path.name}")
 
@@ -216,17 +223,22 @@ class ClaudeLLM:
     """Backend que usa la API de Claude (requiere ANTHROPIC_API_KEY)."""
 
     native_pdf = True
+    vision = True
+    image_max_side = 2400  # px del lado mayor al renderizar planos
     chunk_chars = 0  # 0 = sin troceado (contexto de 1M tokens)
 
     def __init__(self, cfg: ReviewConfig, client=None):
         self.cfg = cfg
         self.client = client or anthropic.Anthropic()
 
-    def generate_text(self, system: str, user: str) -> str:
+    def generate_text(self, system: str, user: str, images: list[bytes] | None = None) -> str:
+        content = [{"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                                "data": base64.standard_b64encode(im).decode("ascii")}}
+                   for im in (images or [])] + [{"type": "text", "text": user}]
         msg = self.client.messages.create(
             model=self.cfg.model, max_tokens=8000, system=system,
             output_config={"effort": "medium"},
-            messages=[{"role": "user", "content": user}],
+            messages=[{"role": "user", "content": content}],
         )
         return "".join(b.text for b in msg.content if b.type == "text").strip()
 
@@ -338,6 +350,7 @@ def review_document(llm, doc: LoadedDoc, cfg: ReviewConfig) -> dict:
 def cross_check(llm, reviews: list[dict], cfg: ReviewConfig) -> dict:
     resumen = [
         {"documento": r["documento"], "tipo": r["tipo_documento"], "resumen": r["resumen"],
+         **({"cajetin": r["cajetin"]} if r.get("cajetin") else {}),
          "hallazgos": [{k: h[k] for k in ("id", "severidad", "problema", "evidencia")} for h in r["hallazgos"]]}
         for r in reviews
     ]
@@ -365,6 +378,14 @@ def render_markdown(reviews: list[dict], cross: dict | None, errors: dict[str, s
     out.append("| Documento | Tipo | Evaluación | Hallazgos |\n|---|---|---|---|")
     for r in reviews:
         out.append(f"| {r['documento']} | {r['tipo_documento']} | {r['evaluacion_global']} | {len(r['hallazgos'])} |")
+    plans = [r for r in reviews if r.get("cajetin")]
+    if plans:
+        out.append("\n**Planos (datos del cajetín):**\n")
+        out.append("| Hoja | N° plano | Título | Rev. | Fecha | Escala | Dibujó | Revisó | Aprobó |\n|---|---|---|---|---|---|---|---|---|")
+        for r in plans:
+            c = r["cajetin"]
+            out.append(f"| {r['documento']} | {c['numero']} | {c['titulo']} | {c['revision']} | {c['fecha']} | "
+                       f"{c['escala']} | {c['dibujo']} | {c['reviso']} | {c['aprobo']} |")
     out.append("\nTotal por severidad: " + ", ".join(f"{s}: {n}" for s, n in total.items()) + "\n")
     if errors:
         out.append("**Documentos no procesados:**\n")
@@ -419,6 +440,8 @@ def review_folder(in_dir: str | Path, out_dir: str | Path, cfg: ReviewConfig | N
     """llm: backend con .generate_json(); por defecto Claude. Para modelo local ver local_llm.LocalLLM."""
     cfg = cfg or ReviewConfig()
     llm = llm or ClaudeLLM(cfg, client)
+    from plan_review import IMAGE_EXTS, is_plan_pdf, review_plan_image, review_plan_pdf
+
     paths = sorted(p for p in Path(in_dir).rglob("*") if p.is_file() and p.suffix.lower() in SUPPORTED)
     if not paths:
         raise FileNotFoundError(f"No hay documentos soportados en {in_dir} ({', '.join(sorted(SUPPORTED))})")
@@ -427,6 +450,11 @@ def review_folder(in_dir: str | Path, out_dir: str | Path, cfg: ReviewConfig | N
     for p in paths:
         print(f"Revisando {p.name} ...")
         try:
+            if p.suffix.lower() in IMAGE_EXTS or (p.suffix.lower() == ".pdf" and is_plan_pdf(p, cfg.plan_mode)):
+                print("  (plano)")
+                fn = review_plan_image if p.suffix.lower() in IMAGE_EXTS else review_plan_pdf
+                reviews.extend(fn(llm, p, cfg))
+                continue
             reviews.append(review_document(llm, load_document(p, llm.native_pdf), cfg))
         except Exception as e:  # un documento defectuoso no debe frenar el lote
             errors[p.name] = f"{type(e).__name__}: {e}"

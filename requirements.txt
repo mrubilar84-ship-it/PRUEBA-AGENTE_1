@@ -2,3 +2,6 @@ anthropic>=1.12
 pypdf
 python-docx
 openpyxl
+pymupdf
+pillow
+# modelo local: transformers>=4.49 accelerate bitsandbytes torch

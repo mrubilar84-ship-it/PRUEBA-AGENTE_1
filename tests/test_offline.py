@@ -108,3 +108,54 @@ def test_chat_recuperacion_si_no_cabe(tmp_path):
     out = chat.ask("¿Qué norma se aplica y cuál es el factor phi?")
     assert "AISC 360" in Fake.seen and "soldadura" not in Fake.seen
     assert "mem.txt (p. 2)" in out
+
+
+# ---- planos
+import shutil
+
+
+def _plan_result(cajetin_num="ST-012"):
+    r = dict(FAKE_REVIEW)
+    r["cajetin"] = {k: "x" for k in ("titulo", "proyecto", "revision", "fecha", "escala", "unidades", "hoja",
+                                     "dibujo", "reviso", "aprobo")}
+    r["cajetin"]["numero"] = cajetin_num
+    return r
+
+
+class _Rec:
+    """Backend falso que registra lo que recibe."""
+    native_pdf = False
+    chunk_chars = 0
+
+    def __init__(self, vision):
+        self.vision, self.calls = vision, []
+
+    def generate_json(self, system, content, schema):
+        self.calls.append(content)
+        return json.loads(json.dumps(_plan_result())) if "cajetin" in schema["properties"] else dict(FAKE_CROSS)
+
+
+def test_plano_con_vision_envia_imagenes(tmp_path):
+    shutil.copy(Path(__file__).resolve().parents[1] / "samples" / "plano_ejemplo.pdf", tmp_path / "plano_ejemplo.pdf")
+    llm = _Rec(vision=True)
+    res = d.review_folder(tmp_path, tmp_path / "out", d.ReviewConfig(), llm=llm)
+    content = llm.calls[0]
+    assert sum(b["type"] == "image" for b in content) == 6  # general + cajetín + 4 cuadrantes
+    assert "ST-012" in content[-1]["text"] and "REV: (vacío)" in content[-1]["text"]  # texto vectorial incluido
+    assert res["revisiones"][0]["cajetin"]["numero"] == "ST-012"
+    assert "N° plano" in (tmp_path / "out" / "informe.md").read_text(encoding="utf-8")
+
+
+def test_plano_sin_vision_solo_texto_con_aviso(tmp_path):
+    shutil.copy(Path(__file__).resolve().parents[1] / "samples" / "plano_ejemplo.pdf", tmp_path / "plano_ejemplo.pdf")
+    llm = _Rec(vision=False)
+    d.review_folder(tmp_path, tmp_path / "out", d.ReviewConfig(), llm=llm)
+    content = llm.calls[0]
+    assert all(b["type"] == "text" for b in content) and "no ve imágenes" in content[-1]["text"]
+
+
+def test_plan_mode_never_trata_pdf_como_documento(tmp_path):
+    import plan_review as P
+    f = tmp_path / "plano_ejemplo.pdf"
+    shutil.copy(Path(__file__).resolve().parents[1] / "samples" / "plano_ejemplo.pdf", f)
+    assert P.is_plan_pdf(f, "auto") and not P.is_plan_pdf(f, "never") and P.is_plan_pdf(f, "always")

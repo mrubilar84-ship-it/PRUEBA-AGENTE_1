@@ -6,7 +6,7 @@ Agente basado en Claude que revisa documentos técnicos (memorias de cálculo, e
 - `hallazgos.csv`: todos los hallazgos en tabla (abre en Excel).
 - `revision.json`: salida estructurada completa.
 
-Formatos: PDF (nativo con Claude; texto extraído con el modelo local), DOCX, XLSX/XLSM (valores y fórmulas), CSV, TXT, MD.
+Formatos: planos PDF/PNG/JPG (visión), PDF (nativo con Claude; texto extraído con el modelo local), DOCX, XLSX/XLSM (valores y fórmulas), CSV, TXT, MD.
 
 ## Dos modos
 | | Modelo local gratis (Qwen2.5) | API de Claude |
@@ -14,18 +14,28 @@ Formatos: PDF (nativo con Claude; texto extraído con el modelo local), DOCX, XL
 | Costo | Gratis (GPU de Kaggle) | De pago |
 | Notebook | `kaggle_revision_documentos.ipynb` | `kaggle_revision_documentos_claude.ipynb` |
 | PDF | Solo texto (escaneados no) | Nativo, con tablas y figuras |
+| Planos | Con `LocalVLM` (visión local, limitada en planos densos) | Visión de alta calidad |
 | Calidad | Buena para checklist y cifras simples; puede errar en cálculos largos | Mayor |
 | Documentos largos | Se revisan por partes y se fusionan | Una sola pasada |
 
 ## Ejecutar en Kaggle (modo gratis)
 1. *Settings → Accelerator*: GPU T4 x2; *Internet: On* (solo para bajar el modelo).
-2. Dataset con tus documentos + Dataset con `doc_review_agent.py`, `local_llm.py`, `checklist_default.md`.
+2. Dataset con tus documentos + Dataset con `doc_review_agent.py`, `plan_review.py`, `local_llm.py`, `doc_chat.py`, `checklist_default.md`, `checklist_planos.md`.
 3. Importa `kaggle_revision_documentos.ipynb`, ajusta `IN_DIR` y ejecuta todo.
 
 ## Ejecutar con Claude (de pago)
 1. Mismos datasets que arriba; importa `kaggle_revision_documentos_claude.ipynb`.
 2. *Settings → Internet: On*; en *Add-ons → Secrets* agrega `ANTHROPIC_API_KEY`.
 3. Ajusta `IN_DIR`, la norma y el contexto en `ReviewConfig`, y ejecuta todo.
+
+## Planos de ingeniería (PDF impresos desde DWG)
+`plan_review.py` revisa **cada hoja mirando su imagen**: vista general, cajetín ampliado y 4 cuadrantes ampliados, más el texto vectorial del PDF (si el CAD lo imprimió como texto). Entrega por hoja: datos del cajetín (n° de plano, revisión, escala, responsables…) y hallazgos según `checklist_planos.md` (cajetín, control de revisiones, escala, cotas y cadenas que no cierran, cortes/detalles sin referencia, simbología y notas, lista de materiales, legibilidad). En multi-hoja compara numeración y revisiones entre planos.
+- Detección automática: PDF de formato ≥ A3 o con «plano/lámina/dwg» en el nombre (`ReviewConfig(plan_mode="always")` para forzar; `"never"` para desactivar). También acepta PNG/JPG/TIF.
+- Modo gratis: `LocalVLM("Qwen/Qwen2.5-VL-7B-Instruct")` (visión local en Kaggle). Es más lento (varios minutos por hoja con cuadrantes; `plan_tiles=False` acelera) y **lee peor los textos pequeños** en planos densos. Con un modelo solo-texto (`LocalLLM`) solo se revisa el texto vectorial y se avisa.
+- Modo Claude: lee planos con mucha más fiabilidad.
+- Preguntas sobre un plano: `chat.ask_image("¿Las cotas suman el total?", "plano.pdf", page=1)`.
+- Limitaciones: no mide sobre la imagen ni lee el DWG (solo el PDF); los hallazgos hay que verificarlos en el DWG. Un PDF con el texto convertido a líneas o escaneado depende solo de la imagen (lectura menos confiable).
+- Prueba: `samples/plano_ejemplo.pdf` (cotas 100+200+250 ≠ 600, cajetín sin revisión/revisó/aprobó, corte A-A sin vista); se regenera con `samples/generar_plano_ejemplo.py`.
 
 ## Chat con los documentos (preguntas y resúmenes)
 Después de la revisión, el mismo notebook tiene un chat (`doc_chat.py`):

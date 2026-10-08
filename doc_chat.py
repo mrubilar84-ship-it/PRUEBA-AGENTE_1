@@ -196,6 +196,32 @@ class DocChat:
             answer += "\n\nContexto usado: " + "; ".join(sources)
         return answer
 
+    def ask_image(self, question: str, pdf_path: str | Path, page: int = 1, tiles: bool = True) -> str:
+        """Pregunta sobre lo que SE VE en una hoja de plano (requiere modelo con visión: LocalVLM o ClaudeLLM)."""
+        if not getattr(self.llm, "vision", False):
+            return "El modelo cargado no ve imágenes. Usa LocalVLM (gratis) o ClaudeLLM para preguntar sobre planos."
+        import pymupdf
+
+        from plan_review import sheet_images, sheet_text
+
+        with pymupdf.open(pdf_path) as doc:
+            pg = doc[page - 1]
+            imgs = sheet_images(pg, getattr(self.llm, "image_max_side", 1500), tiles)
+            text, tb = sheet_text(pg)
+        legend = "; ".join(f"{i}) {d}" for i, (d, _) in enumerate(imgs, 1))
+        parts = []
+        if self.review_digest:
+            parts.append("REVISIÓN PREVIA:\n" + self.review_digest)
+        parts.append(f"Hoja {page} de «{Path(pdf_path).name}». Imágenes en orden: {legend}.")
+        if text:
+            parts.append("TEXTO VECTORIAL DE LA HOJA:\n" + text)
+        if self.history:
+            parts.append("CONVERSACIÓN PREVIA:\n" + "".join(f"Usuario: {q}\nAsistente: {a}\n\n" for q, a in self.history[-self.max_history:]).rstrip())
+        parts.append("PREGUNTA: " + question + "\nNo midas sobre la imagen: usa solo cotas escritas; si algo no se lee con certeza, dilo.")
+        answer = self.llm.generate_text(CHAT_SYSTEM, "\n\n".join(parts), images=[png for _, png in imgs])
+        self.history.append((question, answer))
+        return answer
+
     def summarize(self, doc: str | None = None, window_chars: int = 9000) -> str:
         """Resumen de un documento (o de todos). Documentos largos: resumen por tramos y luego resumen final."""
         names = [doc] if doc else list(self.texts)

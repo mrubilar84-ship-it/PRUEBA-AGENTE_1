@@ -22,13 +22,18 @@ from pathlib import Path
 
 from doc_review_agent import SUPPORTED, load_document
 
-CHAT_SYSTEM = """Eres un asistente técnico que responde preguntas sobre documentos de ingeniería.
-Reglas:
-- Responde SOLO con la información de los FRAGMENTOS entregados. Si no alcanza para responder, dilo \
-y señala qué falta; no inventes valores, normas ni páginas.
-- Cita la fuente de cada dato clave entre corchetes, por ejemplo [memoria.pdf, p. 3].
-- Si te piden un cálculo, muéstralo paso a paso con unidades y advierte si los datos son insuficientes.
-- Responde en español, claro y conciso."""
+CHAT_SYSTEM = """Eres un ingeniero revisor que conversa sobre documentos de ingeniería que ya revisaste.
+Recibirás: (1) la REVISIÓN previa con sus hallazgos, (2) el contenido de los DOCUMENTOS (completo o fragmentos) \
+y la pregunta del usuario.
+Cómo responder:
+- Razona con lógica de ingeniería a partir del contexto: relaciona hallazgos, datos, cálculos y normas entre sí \
+y explica el porqué, no solo qué dice el texto.
+- Distingue claramente lo que está escrito en los documentos de lo que es tu inferencia o recomendación.
+- Si la información no alcanza para concluir, dilo y señala exactamente qué dato falta. No inventes valores, \
+normas ni páginas.
+- Cita la fuente de los datos clave entre corchetes, por ejemplo [memoria.pdf, p. 3] o [hallazgo H-02].
+- En cálculos, muestra los pasos con unidades.
+- Responde en español, claro y directo."""
 
 SUMMARY_SYSTEM = ("Eres un ingeniero que resume documentos técnicos en español: objetivo, datos y criterios clave, "
                   "resultados/conclusiones, normas citadas y puntos pendientes. Sé fiel al texto; no inventes.")
@@ -102,8 +107,13 @@ class BM25:
 
 
 class DocChat:
-    def __init__(self, llm, top_k: int = 6, max_history: int = 4, max_chars: int = 1500):
+    def __init__(self, llm, top_k: int = 6, max_history: int = 4, max_chars: int = 1500,
+                 full_context_chars: int = 30000, digest_chars: int = 7000):
+        """full_context_chars: si todos los documentos suman menos que esto (~9k tokens), se entregan completos
+        al modelo; si no, solo los pasajes más relevantes. La revisión se entrega siempre."""
         self.llm, self.top_k, self.max_history, self.max_chars = llm, top_k, max_history, max_chars
+        self.full_context_chars, self.digest_chars = full_context_chars, digest_chars
+        self.review_digest = ""
         self.passages: list[Passage] = []
         self.texts: dict[str, str] = {}
         self.history: list[tuple[str, str]] = []
@@ -129,16 +139,27 @@ class DocChat:
         print(f"{len(self.passages)} pasajes indexados de {len(self.texts)} documentos.")
 
     def add_review(self, revision_json: str | Path) -> None:
-        """Incorpora los hallazgos de la revisión para poder preguntarlos (p. ej. «¿cuáles son los críticos?»)."""
+        """Incorpora la revisión (resúmenes, hallazgos, inconsistencias) como contexto permanente del chat."""
         data = json.loads(Path(revision_json).read_text(encoding="utf-8"))
+        order = {"critica": 0, "mayor": 1, "menor": 2, "observacion": 3}
+        lines = []
         for r in data.get("revisiones", []):
-            for h in r["hallazgos"]:
-                t = (f"HALLAZGO {h['id']} [{h['severidad']}] ({h['categoria']}) en {r['documento']}, "
-                     f"{h['ubicacion']}: {h['problema']} Evidencia: {h['evidencia']} Recomendación: {h['recomendacion']}")
-                self.passages.append(Passage(r["documento"], "revisión", t))
-            self.passages.append(Passage(r["documento"], "revisión",
-                                         f"RESUMEN DE REVISIÓN de {r['documento']} ({r['evaluacion_global']}): {r['resumen']}"))
-        self._index = None
+            lines.append(f"## {r['documento']} ({r['tipo_documento']}) - evaluación: {r['evaluacion_global']}")
+            lines.append(f"Resumen: {r['resumen']}")
+            for h in sorted(r["hallazgos"], key=lambda h: order[h["severidad"]]):
+                lines.append(f"- [{h['id']}] {h['severidad'].upper()} · {h['categoria']} · {h['ubicacion']}: "
+                             f"{h['problema']} (evidencia: {h['evidencia']}) → {h['recomendacion']}")
+            if r["informacion_faltante"]:
+                lines.append("Información faltante: " + "; ".join(r["informacion_faltante"]))
+        cross = data.get("consistencia")
+        if cross and cross.get("inconsistencias"):
+            lines.append("## Inconsistencias entre documentos")
+            lines += [f"- {c['severidad'].upper()} ({', '.join(c['documentos'])}): {c['descripcion']}"
+                      for c in cross["inconsistencias"]]
+        digest = "\n".join(lines)
+        if len(digest) > self.digest_chars:  # ya viene ordenado por severidad dentro de cada documento
+            digest = digest[:self.digest_chars] + "\n[... revisión recortada por tamaño ...]"
+        self.review_digest = digest
 
     # ---- uso
     def _search(self, query: str) -> list[Passage]:
@@ -146,25 +167,34 @@ class DocChat:
             self._index = BM25(self.passages)
         return self._index.search(query, self.top_k)
 
+    def _context(self, question: str) -> tuple[str, list[str]]:
+        """Devuelve (texto de contexto, fuentes). Documentos completos si caben; si no, pasajes relevantes."""
+        total = sum(len(t) for t in self.texts.values())
+        if total <= self.full_context_chars:
+            ctx = "\n\n".join(f"=== DOCUMENTO: {n} ===\n{t}" for n, t in self.texts.items())
+            return ctx, list(self.texts)
+        query = question if not self.history else f"{self.history[-1][0]} {question}"
+        found = self._search(query)
+        ctx = "\n\n".join(f"[FRAGMENTO {i} | {p.doc}, {p.label}]\n{p.text}" for i, p in enumerate(found, 1))
+        return ctx, list(dict.fromkeys(f"{p.doc} ({p.label})" for p in found))
+
     def ask(self, question: str, show_sources: bool = True) -> str:
         if not self.passages:
             return "No hay documentos cargados."
-        # La pregunta de seguimiento ("¿y su valor?") se enriquece con el turno anterior para recuperar mejor.
-        query = question if not self.history else f"{self.history[-1][0]} {question}"
-        found = self._search(query)
-        if not found:
-            answer = "No encontré fragmentos relacionados con esa pregunta en los documentos cargados."
-        else:
-            ctx = "\n\n".join(f"[FRAGMENTO {i} | {p.doc}, {p.label}]\n{p.text}" for i, p in enumerate(found, 1))
-            hist = "".join(f"Usuario: {q}\nAsistente: {a}\n\n" for q, a in self.history[-self.max_history:])
-            prev = ("CONVERSACIÓN PREVIA:\n" + hist) if hist else ""
-            user = f"FRAGMENTOS:\n{ctx}\n\n{prev}PREGUNTA: {question}"
-            answer = self.llm.generate_text(CHAT_SYSTEM, user)
+        ctx, sources = self._context(question)
+        hist = "".join(f"Usuario: {q}\nAsistente: {a}\n\n" for q, a in self.history[-self.max_history:])
+        parts = []
+        if self.review_digest:
+            parts.append("REVISIÓN PREVIA:\n" + self.review_digest)
+        parts.append("DOCUMENTOS:\n" + (ctx or "(sin fragmentos relevantes para esta pregunta)"))
+        if hist:
+            parts.append("CONVERSACIÓN PREVIA:\n" + hist.rstrip())
+        parts.append("PREGUNTA: " + question)
+        answer = self.llm.generate_text(CHAT_SYSTEM, "\n\n".join(parts))
         self.history.append((question, answer))
-        out = answer
-        if show_sources and found:
-            out += "\n\nFuentes consultadas: " + "; ".join(dict.fromkeys(f"{p.doc} ({p.label})" for p in found))
-        return out
+        if show_sources and sources:
+            answer += "\n\nContexto usado: " + "; ".join(sources)
+        return answer
 
     def summarize(self, doc: str | None = None, window_chars: int = 9000) -> str:
         """Resumen de un documento (o de todos). Documentos largos: resumen por tramos y luego resumen final."""

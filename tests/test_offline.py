@@ -71,7 +71,7 @@ def test_troceado_y_fusion(tmp_path):
 import doc_chat as C
 
 
-def test_chat_recupera_y_cita(tmp_path):
+def _fake_chat(tmp_path, **kw):
     (tmp_path / "mem.txt").write_text(
         "[Página 1]\nObjetivo: verificar la viga V-12.\n[Página 2]\nNorma aplicada AISC 360 con factor phi 0.9.\n"
         "[Página 3]\nDeflexión máxima 16 mm.", encoding="utf-8")
@@ -83,10 +83,28 @@ def test_chat_recupera_y_cita(tmp_path):
         def generate_text(self, system, user):
             Fake.seen = user
             return "Se usa AISC 360 [mem.txt, p. 2]"
-    chat = C.DocChat(Fake())
+    chat = C.DocChat(Fake(), **kw)
     chat.add_folder(tmp_path)
+    return chat, Fake
+
+
+def test_chat_contexto_completo_con_revision(tmp_path):
+    chat, Fake = _fake_chat(tmp_path)
+    rev = tmp_path / "rev.json"
+    rev.write_text(json.dumps({"revisiones": [{"documento": "mem.txt", "tipo_documento": "Memoria", "resumen": "res",
+        "evaluacion_global": "requiere_revision", "informacion_faltante": ["revisor"],
+        "hallazgos": [{"id": "H-01", "severidad": "mayor", "categoria": "Cálculos", "ubicacion": "§7",
+                       "evidencia": "δ=16", "problema": "deflexión mal calculada", "recomendacion": "recalcular"}]}],
+        "consistencia": None}), encoding="utf-8")
+    chat.add_review(rev)
+    out = chat.ask("¿Por qué la deflexión está mal?")
+    assert "deflexión mal calculada" in Fake.seen and "AISC 360" in Fake.seen and "WPS-01" in Fake.seen
+    assert "Contexto usado" in out and chat.history
+    assert chat.summarize("nope").startswith("No encuentro") and "mem.txt" in chat.summarize("mem.txt")
+
+
+def test_chat_recuperacion_si_no_cabe(tmp_path):
+    chat, Fake = _fake_chat(tmp_path, full_context_chars=50)
     out = chat.ask("¿Qué norma se aplica y cuál es el factor phi?")
     assert "AISC 360" in Fake.seen and "soldadura" not in Fake.seen
     assert "mem.txt (p. 2)" in out
-    assert chat.history and chat.summarize("nope").startswith("No encuentro")
-    assert "mem.txt" in chat.summarize("mem.txt")

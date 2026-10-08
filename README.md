@@ -35,7 +35,9 @@ chat.ask("¿Qué norma se aplica y con qué factor de seguridad?")   # responde 
 chat.summarize("memoria.pdf")                                      # resumen (por tramos si es largo)
 chat.repl()                                                        # chat interactivo
 ```
-Busca los pasajes relevantes (BM25, sin dependencias extra) y solo esos se envían al modelo, por eso funciona incluso con el modelo pequeño. Recuerda la conversación (preguntas de seguimiento). Si la respuesta no está en los documentos, lo dice.
+Cómo entiende el contexto: en cada pregunta el modelo recibe (1) **la revisión completa** (resúmenes, hallazgos por severidad, inconsistencias), (2) **los documentos** (completos si caben en ~30.000 caracteres; si no, los pasajes más relevantes por búsqueda BM25) y (3) la conversación previa. Está instruido para razonar con lógica de ingeniería, separar lo que dice el documento de su inferencia, citar `[archivo, p. N]` / `[hallazgo H-02]` y decir qué dato falta cuando no puede concluir. Ajustable con `DocChat(llm, full_context_chars=..., top_k=...)`.
+
+Para respuestas más razonadas en modo gratis usa un modelo mayor: `LocalLLM("Qwen/Qwen2.5-14B-Instruct")` (4 bits, ~9 GB, cabe en T4 x2; más lento).
 
 ## Personalizar
 - `checklist_default.md`: criterios y escala de severidad (puedes pasar otro con `ReviewConfig(checklist_path=...)`).

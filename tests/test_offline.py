@@ -389,3 +389,35 @@ def test_retry_seconds_y_humanize():
     assert G._retry_seconds(Exception("{'retryDelay': '34s'}")) == 34
     assert G._retry_seconds(Exception("otro error")) is None
     assert G._humanize(3683) == "1 h 1 min" and G._humanize(125) == "2 min" and G._humanize(40) == "40 s"
+
+
+# ---- LocalLLM._chat con tokenizador y modelo simulados (requiere torch; se omite si no está instalado)
+def test_localllm_chat_compatible_con_transformers_4_y_5():
+    torch = __import__("pytest").importorskip("torch")
+
+    class Enc(dict):  # como BatchEncoding: dict con .to()
+        def to(self, device): return self
+
+    class Tok:
+        eos_token_id = 0
+        def apply_chat_template(self, msgs, tokenize=False, add_generation_prompt=True):
+            assert tokenize is False and msgs[0]["role"] == "system"
+            return "PROMPT"
+        def __call__(self, text, return_tensors=None, add_special_tokens=True):
+            assert text == "PROMPT" and return_tensors == "pt"
+            return Enc(input_ids=torch.tensor([[1, 2, 3]]), attention_mask=torch.tensor([[1, 1, 1]]))
+        def decode(self, ids, skip_special_tokens=True):
+            return "ids:" + ",".join(str(int(i)) for i in ids)
+
+    class Model:
+        device = "cpu"
+        def generate(self, input_ids=None, attention_mask=None, **kw):
+            assert kw["do_sample"] is False
+            return torch.cat([input_ids, torch.tensor([[7, 8]])], dim=1)
+
+    llm = L.LocalLLM.__new__(L.LocalLLM)  # sin cargar un modelo real
+    llm.tok, llm.model, llm.max_new_tokens, llm.retries = Tok(), Model(), 50, 1
+    assert llm.generate_text("sys", "user") == "ids:7,8"  # solo los tokens nuevos
+    llm._chat = lambda system, user, images=None: '{"tipo_documento":"X","resumen":"r","evaluacion_global":"aprobado","hallazgos":[],"informacion_faltante":[]}'
+    out = llm.generate_json("s", [{"type": "text", "text": "doc"}], d.REVIEW_SCHEMA)
+    assert out["evaluacion_global"] == "aprobado" and out["hallazgos"] == []

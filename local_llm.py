@@ -114,14 +114,15 @@ class LocalLLM:
         import torch
 
         msgs = [{"role": "system", "content": system}, {"role": "user", "content": user}]
-        ids = self.tok.apply_chat_template(msgs, add_generation_prompt=True, return_tensors="pt")
-        ids = ids.to(self.model.device)
+        # Texto + tokenizar aparte: funciona igual en transformers 4.x y 5.x (apply_chat_template cambió su retorno).
+        prompt = self.tok.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+        inputs = self.tok(prompt, return_tensors="pt", add_special_tokens=False).to(self.model.device)
         with torch.no_grad():
             out = self.model.generate(
-                ids, max_new_tokens=self.max_new_tokens, do_sample=False,
+                **inputs, max_new_tokens=self.max_new_tokens, do_sample=False,
                 repetition_penalty=1.05, pad_token_id=self.tok.eos_token_id,
             )
-        return self.tok.decode(out[0][ids.shape[1]:], skip_special_tokens=True)
+        return self.tok.decode(out[0][inputs["input_ids"].shape[1]:], skip_special_tokens=True)
 
     def generate_text(self, system: str, user: str, images: list[bytes] | None = None) -> str:
         return self._chat(system, user, images).strip()

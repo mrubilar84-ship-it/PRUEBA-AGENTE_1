@@ -312,3 +312,17 @@ def test_ignora_archivos_del_proyecto(tmp_path):
     c = FakeClient(); c.messages = c
     res = d.review_folder(tmp_path, tmp_path / "out", d.ReviewConfig(), client=c)
     assert [r["documento"] for r in res["revisiones"]] == ["memoria.md"]
+
+
+def test_gemini_error_claro_404_y_list_models():
+    llm = G.GeminiLLM(client=_GClient([_GErr(404)]), model="modelo-viejo")
+    try:
+        llm.generate_text("s", "u"); assert False
+    except RuntimeError as e:
+        assert "404" in str(e) and "modelo-viejo" in str(e) and "list_models" in str(e)
+
+    class M:
+        def __init__(self, n, a): self.name, self.supported_actions = n, a
+    c = _GClient([]); c.list = lambda: [M("models/a", ["generateContent"]), M("models/emb", ["embedContent"])]
+    c.models = c
+    assert G.GeminiLLM(client=c).list_models() == ["a"]

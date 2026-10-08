@@ -21,6 +21,17 @@ from local_llm import _schema_example, coerce, extract_json
 DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"  # verifica en AI Studio qué modelos tienes disponibles
 
 
+_HINTS = {
+    400: "Pista: revisa que la clave GEMINI_API_KEY sea válida y que la petición no sea demasiado grande.",
+    401: "Pista: la clave GEMINI_API_KEY no es válida.",
+    403: "Pista: la clave no tiene permiso para este modelo o el proyecto no tiene acceso gratuito. "
+         "Crea otra clave en AI Studio o prueba otro modelo (llm.list_models()).",
+    404: "Pista: ese modelo no existe o ya no está disponible. Ejecuta llm.list_models() y usa uno de la lista: "
+         "GeminiLLM('nombre').",
+    429: "Pista: agotaste la cuota del plan gratuito (por minuto o por día). Espera, usa otro modelo, o activa facturación.",
+}
+
+
 class GeminiLLM:
     native_pdf = False  # el agente extrae el texto del PDF; las imágenes de planos van aparte
     vision = True
@@ -40,6 +51,19 @@ class GeminiLLM:
                 raise RuntimeError("Falta la clave: define GEMINI_API_KEY (en Kaggle: Add-ons → Secrets).")
             client = genai.Client(api_key=key)
         self.client = client
+
+    def list_models(self) -> list[str]:
+        """Modelos que tu clave puede usar para generar contenido."""
+        out = []
+        for m in self.client.models.list():
+            acts = getattr(m, "supported_actions", None) or []
+            if not acts or "generateContent" in acts:
+                out.append(m.name.replace("models/", ""))
+        return out
+
+    def check(self) -> str:
+        """Prueba rápida de conexión (clave, modelo y cuota) antes de procesar documentos."""
+        return self.generate_text("Responde en una palabra.", "Di: listo")
 
     def _call(self, system: str, text: str, images: list[bytes] | None, json_mode: bool) -> str:
         from google.genai import types
@@ -63,6 +87,9 @@ class GeminiLLM:
                     time.sleep(delay)
                     delay = min(delay * 2, 90)
                     continue
+                if code is not None:
+                    raise RuntimeError(f"Gemini devolvió el error {code} con el modelo «{self.model}»: "
+                                       f"{getattr(e, 'message', None) or e}\n{_HINTS.get(code, '')}") from e
                 raise
 
     def generate_text(self, system: str, user: str, images: list[bytes] | None = None) -> str:

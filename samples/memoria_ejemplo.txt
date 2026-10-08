@@ -1,0 +1,11 @@
+MEMORIA DE CÁLCULO - VIGA V-12
+Doc: MC-001  Rev: B  Fecha: 2026-03-10  Autor: J. Pérez  (sin revisor ni aprobador)
+
+1. Objetivo: verificar la viga V-12 de acero A36 bajo carga de servicio.
+2. Datos: luz L = 6.0 m; carga muerta 12 kN/m; carga viva 8 kN/m; perfil IPE 300.
+3. Combinación: w = 1.2*12 + 1.6*8 = 25.2 kN/m
+4. Momento máximo: M = w*L^2/8 = 25.2*6^2/8 = 100.8 kN·m
+5. Resistencia: Wpl = 628 cm3, Fy = 250 MPa -> Mn = 157 kN·m; φ = 0.9 -> φMn = 141 kN·m
+6. Verificación: M = 100.8 < 141 -> OK
+7. Deflexión: δ = 5*w*L^4/(384*E*I) con w = 20 kN/m, I = 8356 cm4, E = 200 GPa -> δ = 16 mm (L/375) OK
+8. Norma aplicada: AISC 360 (edición por confirmar). Ver plano PL-045 para detalles de apoyos.

@@ -121,6 +121,9 @@ class LocalLLM:
             )
         return self.tok.decode(out[0][ids.shape[1]:], skip_special_tokens=True)
 
+    def generate_text(self, system: str, user: str) -> str:
+        return self._chat(system, user).strip()
+
     def generate_json(self, system: str, content: list[dict], schema: dict) -> dict:
         document = "\n\n".join(b["text"] for b in content if b["type"] == "text")
         example = json.dumps(_schema_example(schema), ensure_ascii=False, indent=2)

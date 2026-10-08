@@ -27,6 +27,16 @@ Formatos: PDF (nativo con Claude; texto extraído con el modelo local), DOCX, XL
 2. *Settings → Internet: On*; en *Add-ons → Secrets* agrega `ANTHROPIC_API_KEY`.
 3. Ajusta `IN_DIR`, la norma y el contexto en `ReviewConfig`, y ejecuta todo.
 
+## Chat con los documentos (preguntas y resúmenes)
+Después de la revisión, el mismo notebook tiene un chat (`doc_chat.py`):
+```python
+chat = DocChat(llm); chat.add_folder(IN_DIR); chat.add_review("/kaggle/working/informe/revision.json")
+chat.ask("¿Qué norma se aplica y con qué factor de seguridad?")   # responde con citas [archivo, p. N]
+chat.summarize("memoria.pdf")                                      # resumen (por tramos si es largo)
+chat.repl()                                                        # chat interactivo
+```
+Busca los pasajes relevantes (BM25, sin dependencias extra) y solo esos se envían al modelo, por eso funciona incluso con el modelo pequeño. Recuerda la conversación (preguntas de seguimiento). Si la respuesta no está en los documentos, lo dice.
+
 ## Personalizar
 - `checklist_default.md`: criterios y escala de severidad (puedes pasar otro con `ReviewConfig(checklist_path=...)`).
 - `ReviewConfig`: `model` (por defecto `claude-opus-5-5`, o variable `DOC_REVIEW_MODEL`), `effort` (`low`…`max`), `extra_instructions`, `cross_check`.

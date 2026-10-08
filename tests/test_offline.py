@@ -65,3 +65,28 @@ def test_troceado_y_fusion(tmp_path):
     assert Fake.n > 2 and r["evaluacion_global"] == "requiere_revision"
     assert r["hallazgos"][0]["severidad"] == "mayor" and r["hallazgos"][0]["id"] == "H-01"
     assert r["informacion_faltante"] == ["rev"]
+
+
+# ---- chat sobre documentos
+import doc_chat as C
+
+
+def test_chat_recupera_y_cita(tmp_path):
+    (tmp_path / "mem.txt").write_text(
+        "[Página 1]\nObjetivo: verificar la viga V-12.\n[Página 2]\nNorma aplicada AISC 360 con factor phi 0.9.\n"
+        "[Página 3]\nDeflexión máxima 16 mm.", encoding="utf-8")
+    (tmp_path / "otro.txt").write_text("Procedimiento de soldadura WPS-01 para tuberías.", encoding="utf-8")
+
+    class Fake:
+        native_pdf = False
+        seen = None
+        def generate_text(self, system, user):
+            Fake.seen = user
+            return "Se usa AISC 360 [mem.txt, p. 2]"
+    chat = C.DocChat(Fake())
+    chat.add_folder(tmp_path)
+    out = chat.ask("¿Qué norma se aplica y cuál es el factor phi?")
+    assert "AISC 360" in Fake.seen and "soldadura" not in Fake.seen
+    assert "mem.txt (p. 2)" in out
+    assert chat.history and chat.summarize("nope").startswith("No encuentro")
+    assert "mem.txt" in chat.summarize("mem.txt")

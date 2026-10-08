@@ -222,6 +222,14 @@ class ClaudeLLM:
         self.cfg = cfg
         self.client = client or anthropic.Anthropic()
 
+    def generate_text(self, system: str, user: str) -> str:
+        msg = self.client.messages.create(
+            model=self.cfg.model, max_tokens=8000, system=system,
+            output_config={"effort": "medium"},
+            messages=[{"role": "user", "content": user}],
+        )
+        return "".join(b.text for b in msg.content if b.type == "text").strip()
+
     def generate_json(self, system: str, content: list[dict], schema: dict) -> dict:
         cfg, client = self.cfg, self.client
         params = dict(

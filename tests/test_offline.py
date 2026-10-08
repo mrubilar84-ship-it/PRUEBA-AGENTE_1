@@ -304,3 +304,11 @@ def test_resolve_dir_url_y_slug(tmp_path, monkeypatch):
         d.resolve_dir("otro-dataset"); assert False
     except FileNotFoundError as e:
         assert "agente-rev-doc-ing" in str(e) or "datasets" in str(e)
+
+
+def test_ignora_archivos_del_proyecto(tmp_path):
+    for n in ("checklist_default.md", "README.md", "checklist_planos.md", "memoria.md"):
+        (tmp_path / n).write_text("contenido", encoding="utf-8")
+    c = FakeClient(); c.messages = c
+    res = d.review_folder(tmp_path, tmp_path / "out", d.ReviewConfig(), client=c)
+    assert [r["documento"] for r in res["revisiones"]] == ["memoria.md"]

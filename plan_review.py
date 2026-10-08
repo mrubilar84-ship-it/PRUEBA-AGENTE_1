@@ -17,7 +17,7 @@ from pathlib import Path
 import pymupdf
 
 from doc_review_agent import (
-    REVIEW_SCHEMA, SYSTEM_PROMPT, ReviewConfig, _text_block, resolve_dir,
+    REVIEW_SCHEMA, SYSTEM_PROMPT, ReviewConfig, _text_block, is_project_file, resolve_dir,
 )
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
@@ -278,7 +278,7 @@ def interpret_folder(in_dir: str | Path, out_dir: str | Path, cfg: ReviewConfig 
     plans, errors = [], {}
     for p in sorted(resolve_dir(in_dir).rglob("*")):
         ext = p.suffix.lower()
-        if p.is_file() and not p.name.endswith(".plano.pdf") and (ext in IMAGE_EXTS or (ext == ".pdf" and is_plan_pdf(p, cfg.plan_mode))):
+        if p.is_file() and not is_project_file(p) and not p.name.endswith(".plano.pdf") and (ext in IMAGE_EXTS or (ext == ".pdf" and is_plan_pdf(p, cfg.plan_mode))):
             print(f"Interpretando {p.name} ...")
             try:
                 plans += (interpret_plan_image if ext in IMAGE_EXTS else interpret_plan_pdf)(llm, p, cfg)

@@ -104,6 +104,12 @@ CROSS_SCHEMA = {
 KAGGLE_INPUT = Path("/kaggle/input")
 
 
+def is_project_file(p: Path) -> bool:
+    """Archivos del propio agente (checklists, README) que no son documentos a revisar."""
+    n = p.name.lower()
+    return n.startswith("checklist_") or n == "readme.md" or ".git" in p.parts or "agente" in p.parts[-2:-1]
+
+
 def resolve_dir(path) -> Path:
     """Acepta una carpeta, o el nombre/URL de un dataset de Kaggle (busca su carpeta en /kaggle/input)."""
     p = Path(str(path))
@@ -467,7 +473,8 @@ def review_folder(in_dir: str | Path, out_dir: str | Path, cfg: ReviewConfig | N
     from plan_review import IMAGE_EXTS, is_plan_pdf, review_plan_image, review_plan_pdf
 
     in_dir = resolve_dir(in_dir)
-    paths = sorted(p for p in Path(in_dir).rglob("*") if p.is_file() and p.suffix.lower() in SUPPORTED)
+    paths = sorted(p for p in Path(in_dir).rglob("*")
+                   if p.is_file() and p.suffix.lower() in SUPPORTED and not is_project_file(p))
     if not paths:
         raise FileNotFoundError(f"No hay documentos soportados en {in_dir} ({', '.join(sorted(SUPPORTED))})")
 

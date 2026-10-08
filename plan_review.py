@@ -17,7 +17,7 @@ from pathlib import Path
 import pymupdf
 
 from doc_review_agent import (
-    REVIEW_SCHEMA, SYSTEM_PROMPT, ReviewConfig, _text_block,
+    REVIEW_SCHEMA, SYSTEM_PROMPT, ReviewConfig, _text_block, resolve_dir,
 )
 
 IMAGE_EXTS = {".png", ".jpg", ".jpeg", ".tif", ".tiff"}
@@ -276,7 +276,7 @@ def interpret_folder(in_dir: str | Path, out_dir: str | Path, cfg: ReviewConfig 
     if not getattr(llm, "vision", False):
         print("AVISO: el modelo no ve imágenes; la interpretación se limitará al texto vectorial del PDF.")
     plans, errors = [], {}
-    for p in sorted(Path(in_dir).rglob("*")):
+    for p in sorted(resolve_dir(in_dir).rglob("*")):
         ext = p.suffix.lower()
         if p.is_file() and not p.name.endswith(".plano.pdf") and (ext in IMAGE_EXTS or (ext == ".pdf" and is_plan_pdf(p, cfg.plan_mode))):
             print(f"Interpretando {p.name} ...")

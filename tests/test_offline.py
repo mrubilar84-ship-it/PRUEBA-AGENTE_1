@@ -289,3 +289,18 @@ def test_gemini_sin_clave(monkeypatch):
         G.GeminiLLM(); assert False
     except RuntimeError as e:
         assert "GEMINI_API_KEY" in str(e)
+
+
+# ---- resolver carpeta / URL de dataset de Kaggle
+def test_resolve_dir_url_y_slug(tmp_path, monkeypatch):
+    root = tmp_path / "kaggle_input"
+    (root / "datasets" / "mauricio" / "agente-rev-doc-ing").mkdir(parents=True)
+    monkeypatch.setattr(d, "KAGGLE_INPUT", root)
+    hit = d.resolve_dir("https://www.kaggle.com/datasets/mauricio/agente-rev-doc-ing")
+    assert hit.name == "agente-rev-doc-ing" and hit.is_dir()
+    assert d.resolve_dir("agente-rev-doc-ing") == hit
+    assert d.resolve_dir(hit) == hit
+    try:
+        d.resolve_dir("otro-dataset"); assert False
+    except FileNotFoundError as e:
+        assert "agente-rev-doc-ing" in str(e) or "datasets" in str(e)

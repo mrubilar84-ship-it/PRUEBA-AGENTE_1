@@ -20,7 +20,7 @@ from collections import Counter
 from dataclasses import dataclass
 from pathlib import Path
 
-from doc_review_agent import SUPPORTED, load_document
+from doc_review_agent import SUPPORTED, load_document, resolve_dir
 
 CHAT_SYSTEM = """Eres un ingeniero revisor que conversa sobre documentos de ingeniería que ya revisaste.
 Recibirás: (1) la REVISIÓN previa con sus hallazgos, (2) el contenido de los DOCUMENTOS (completo o fragmentos) \
@@ -136,7 +136,7 @@ class DocChat:
         self._index = None
 
     def add_folder(self, folder: str | Path) -> None:
-        for p in sorted(Path(folder).rglob("*")):
+        for p in sorted(resolve_dir(folder).rglob("*")):
             if p.is_file() and p.suffix.lower() in SUPPORTED:
                 try:
                     self.add_file(p)

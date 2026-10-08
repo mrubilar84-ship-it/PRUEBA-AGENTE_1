@@ -101,6 +101,30 @@ CROSS_SCHEMA = {
 }
 
 
+KAGGLE_INPUT = Path("/kaggle/input")
+
+
+def resolve_dir(path) -> Path:
+    """Acepta una carpeta, o el nombre/URL de un dataset de Kaggle (busca su carpeta en /kaggle/input)."""
+    p = Path(str(path))
+    if p.is_dir():
+        return p
+    slug = str(path).strip().rstrip("/").split("/")[-1]
+    if KAGGLE_INPUT.is_dir() and slug:
+        base_depth = len(KAGGLE_INPUT.parts)
+        for root, dirs, _ in os.walk(KAGGLE_INPUT):
+            if len(Path(root).parts) - base_depth >= 4:
+                dirs[:] = []
+            if Path(root).name == slug:
+                return Path(root)
+        found = sorted(str(Path(r).relative_to(KAGGLE_INPUT)) for r, d, _ in os.walk(KAGGLE_INPUT)
+                       if len(Path(r).parts) - base_depth <= 2 and Path(r) != KAGGLE_INPUT)
+        raise FileNotFoundError(
+            f"No encuentro la carpeta «{path}». ¿Agregaste el dataset al notebook (Input → Add Input)? "
+            f"Carpetas disponibles en /kaggle/input: {found[:20] or 'ninguna'}")
+    raise FileNotFoundError(f"No existe la carpeta {path}")
+
+
 @dataclass
 class ReviewConfig:
     model: str = os.environ.get("DOC_REVIEW_MODEL", DEFAULT_MODEL)
@@ -442,6 +466,7 @@ def review_folder(in_dir: str | Path, out_dir: str | Path, cfg: ReviewConfig | N
     llm = llm or ClaudeLLM(cfg, client)
     from plan_review import IMAGE_EXTS, is_plan_pdf, review_plan_image, review_plan_pdf
 
+    in_dir = resolve_dir(in_dir)
     paths = sorted(p for p in Path(in_dir).rglob("*") if p.is_file() and p.suffix.lower() in SUPPORTED)
     if not paths:
         raise FileNotFoundError(f"No hay documentos soportados en {in_dir} ({', '.join(sorted(SUPPORTED))})")

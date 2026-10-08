@@ -35,7 +35,7 @@ Formatos: planos PDF/PNG/JPG (visión), PDF (nativo con Claude; texto extraído 
 1. Crea una clave en [Google AI Studio](https://aistudio.google.com/apikey).
 2. *Settings → Internet: On* (no necesitas GPU); en *Add-ons → Secrets* agrega `GEMINI_API_KEY`.
 3. Mismos datasets que arriba, más `gemini_llm.py`; importa `kaggle_revision_documentos_gemini.ipynb`.
-4. Ajusta `IN_DIR`, la norma y el contexto en `ReviewConfig`, y ejecuta todo. El modelo por defecto es `gemini-2.5-flash`; cámbialo con `GeminiLLM("modelo")` o la variable `GEMINI_MODEL` (verifica en AI Studio los modelos disponibles).
+4. Ajusta `IN_DIR`, la norma y el contexto en `ReviewConfig`, y ejecuta todo. El modelo por defecto es `gemini-3.8-flash`; cámbialo con `GeminiLLM("modelo")` o la variable `GEMINI_MODEL` (verifica en AI Studio los modelos disponibles).
 5. En el plan gratuito los límites son bajos y cambian (el agente espera y reintenta ante errores 429), y Google puede usar los datos enviados para mejorar sus productos: no lo uses con documentos confidenciales sin activar facturación.
 
 ## Planos de ingeniería (PDF impresos desde DWG)

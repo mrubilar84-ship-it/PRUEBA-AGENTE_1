@@ -326,3 +326,24 @@ def test_gemini_error_claro_404_y_list_models():
     c = _GClient([]); c.list = lambda: [M("models/a", ["generateContent"]), M("models/emb", ["embedContent"])]
     c.models = c
     assert G.GeminiLLM(client=c).list_models() == ["a"]
+
+
+def test_gemini_404_cambia_a_un_flash_disponible(monkeypatch):
+    class M:
+        def __init__(self, n, a=("generateContent",)): self.name, self.supported_actions = n, list(a)
+    c = _GClient([_GErr(404), "listo"])
+    c.list = lambda: [M("models/gemini-2.5-flash"), M("models/gemini-3.1-flash-lite"), M("models/gemini-3.5-flash"),
+                      M("models/gemini-4-flash-preview"), M("models/gemini-3.5-pro"), M("models/text-embedding", ["embedContent"])]
+    monkeypatch.delenv("GEMINI_MODEL", raising=False)
+    llm = G.GeminiLLM(client=c)
+    assert llm.generate_text("s", "u") == "listo"
+    assert llm.model == "gemini-3.5-flash"  # el flash estable de mayor versión (ignora lite, pro y preview)
+    assert [call[0] for call in c.calls] == ["gemini-3.8-flash", "gemini-3.5-flash"]
+
+
+def test_gemini_404_con_modelo_explicito_no_se_cambia():
+    llm = G.GeminiLLM(client=_GClient([_GErr(404)]), model="mi-modelo")
+    try:
+        llm.generate_text("s", "u"); assert False
+    except RuntimeError as e:
+        assert "mi-modelo" in str(e) and llm.model == "mi-modelo"

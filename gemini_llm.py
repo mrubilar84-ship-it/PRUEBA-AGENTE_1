@@ -14,11 +14,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import time
 
 from local_llm import _schema_example, coerce, extract_json
 
-DEFAULT_GEMINI_MODEL = "gemini-2.5-flash"  # verifica en AI Studio qué modelos tienes disponibles
+DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"  # si no existe para tu clave se elige otro "flash" disponible (ver list_models())
 
 
 _HINTS = {
@@ -41,6 +42,7 @@ class GeminiLLM:
 
     def __init__(self, model: str | None = None, api_key: str | None = None, client=None,
                  max_output_tokens: int = 16000, retries: int = 6, parse_retries: int = 2):
+        self._auto_model = not model and not os.environ.get("GEMINI_MODEL")  # modelo por defecto: se puede sustituir
         self.model = model or os.environ.get("GEMINI_MODEL", DEFAULT_GEMINI_MODEL)
         self.max_output_tokens, self.retries, self.parse_retries = max_output_tokens, retries, parse_retries
         if client is None:
@@ -64,6 +66,16 @@ class GeminiLLM:
             if not acts or "generateContent" in acts:
                 out.append(m.name.replace("models/", ""))
         return out
+
+    def _pick_fallback(self) -> str | None:
+        """Mejor modelo «flash» disponible: el de versión más alta, prefiriendo los estables a preview/exp."""
+        skip = ("lite", "image", "tts", "audio", "live", "embed", "robotics", "computer", "veo", "imagen")
+        names = [n for n in self.list_models() if "flash" in n and not any(x in n for x in skip)]
+
+        def key(n):
+            v = re.search(r"gemini-(\d+(?:\.\d+)?)", n)
+            return (0 if re.search(r"preview|exp", n) else 1, float(v.group(1)) if v else 0, -len(n))
+        return max(names, key=key) if names else None
 
     def check(self) -> str:
         """Prueba rápida de conexión (clave, modelo y cuota) antes de procesar documentos."""
@@ -91,6 +103,13 @@ class GeminiLLM:
                     time.sleep(delay)
                     delay = min(delay * 2, 90)
                     continue
+                if code == 404 and self._auto_model:
+                    self._auto_model = False  # solo un intento de sustitución
+                    alt = self._pick_fallback()
+                    if alt and alt != self.model:
+                        print(f"  El modelo «{self.model}» no está disponible; uso «{alt}».")
+                        self.model = alt
+                        continue
                 if code is not None:
                     raise RuntimeError(f"Gemini devolvió el error {code} con el modelo «{self.model}»: "
                                        f"{getattr(e, 'message', None) or e}\n{_HINTS.get(code, '')}") from e

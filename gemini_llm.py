@@ -23,8 +23,8 @@ DEFAULT_GEMINI_MODEL = "gemini-3.8-flash"  # si no existe para tu clave se elige
 
 
 _HINTS = {
-    400: "Pista: revisa que la clave GEMINI_API_KEY sea válida y que la petición no sea demasiado grande.",
-    401: "Pista: la clave GEMINI_API_KEY no es válida.",
+    400: "Pista: revisa que la clave GEMINI_API_KEY esté completa y sea válida (¿copiaste el ID del proyecto en vez de la clave?) y que la petición no sea demasiado grande.",
+    401: "Pista: la clave GEMINI_API_KEY no es válida (¿copiaste el ID del proyecto en vez de la clave?).",
     403: "Pista: la clave no tiene permiso para este modelo o el proyecto no tiene acceso gratuito. "
          "Crea otra clave en AI Studio o prueba otro modelo (llm.list_models()).",
     404: "Pista: ese modelo no existe o ya no está disponible. Ejecuta llm.list_models() y usa uno de la lista: "
@@ -52,9 +52,6 @@ class GeminiLLM:
             if not key:
                 raise RuntimeError("Falta la clave: define GEMINI_API_KEY (en Kaggle: Add-ons → Secrets).")
             key = key.strip().strip("\"'")  # tolera espacios, saltos de línea o comillas al pegar
-            if not key.startswith("AIza"):
-                print("AVISO: la clave no empieza con «AIza»; las claves de Google AI Studio suelen empezar así. "
-                      "¿Copiaste el ID del proyecto en vez de la clave?")
             client = genai.Client(api_key=key)
         self.client = client
 

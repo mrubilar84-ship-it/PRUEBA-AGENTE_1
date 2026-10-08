@@ -6,13 +6,26 @@ Agente basado en Claude que revisa documentos técnicos (memorias de cálculo, e
 - `hallazgos.csv`: todos los hallazgos en tabla (abre en Excel).
 - `revision.json`: salida estructurada completa.
 
-Formatos: PDF (se envía nativo, Claude ve tablas y figuras), DOCX, XLSX/XLSM (valores y fórmulas), CSV, TXT, MD.
+Formatos: PDF (nativo con Claude; texto extraído con el modelo local), DOCX, XLSX/XLSM (valores y fórmulas), CSV, TXT, MD.
 
-## Ejecutar en Kaggle
-1. Crea un Dataset con tus documentos y otro (o el mismo) con `doc_review_agent.py` y `checklist_default.md`.
-2. Importa `kaggle_revision_documentos.ipynb` como notebook.
-3. *Settings → Internet: On*; en *Add-ons → Secrets* agrega `ANTHROPIC_API_KEY`.
-4. Ajusta `IN_DIR`, la norma y el contexto en `ReviewConfig`, y ejecuta todo.
+## Dos modos
+| | Modelo local gratis (Qwen2.5) | API de Claude |
+|---|---|---|
+| Costo | Gratis (GPU de Kaggle) | De pago |
+| Notebook | `kaggle_revision_documentos.ipynb` | `kaggle_revision_documentos_claude.ipynb` |
+| PDF | Solo texto (escaneados no) | Nativo, con tablas y figuras |
+| Calidad | Buena para checklist y cifras simples; puede errar en cálculos largos | Mayor |
+| Documentos largos | Se revisan por partes y se fusionan | Una sola pasada |
+
+## Ejecutar en Kaggle (modo gratis)
+1. *Settings → Accelerator*: GPU T4 x2; *Internet: On* (solo para bajar el modelo).
+2. Dataset con tus documentos + Dataset con `doc_review_agent.py`, `local_llm.py`, `checklist_default.md`.
+3. Importa `kaggle_revision_documentos.ipynb`, ajusta `IN_DIR` y ejecuta todo.
+
+## Ejecutar con Claude (de pago)
+1. Mismos datasets que arriba; importa `kaggle_revision_documentos_claude.ipynb`.
+2. *Settings → Internet: On*; en *Add-ons → Secrets* agrega `ANTHROPIC_API_KEY`.
+3. Ajusta `IN_DIR`, la norma y el contexto en `ReviewConfig`, y ejecuta todo.
 
 ## Personalizar
 - `checklist_default.md`: criterios y escala de severidad (puedes pasar otro con `ReviewConfig(checklist_path=...)`).
@@ -30,4 +43,4 @@ ANTHROPIC_API_KEY=... python doc_review_agent.py samples /tmp/informe --contexto
 - Un PDF admite hasta 30 MB / 600 páginas; si es mayor, divídelo.
 - Los documentos se envían a la API de Anthropic: no subas información confidencial sin autorización.
 - La revisión es una ayuda; no reemplaza la revisión y firma de un ingeniero responsable.
-- La ejecución real contra la API no se probó en esta sesión (sin clave); solo la prueba offline.
+- Ni el modelo local (sin GPU aquí) ni la API de Claude (sin clave) se ejecutaron en esta sesión; solo las pruebas offline.

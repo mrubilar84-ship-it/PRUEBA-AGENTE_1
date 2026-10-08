@@ -19,7 +19,10 @@ import os
 from dataclasses import dataclass, field
 from pathlib import Path
 
-import anthropic
+try:
+    import anthropic
+except ImportError:  # el backend local no necesita el SDK de Anthropic
+    anthropic = None
 
 DEFAULT_MODEL = "claude-opus-5-5"
 DEFAULT_CHECKLIST = Path(__file__).with_name("checklist_default.md")
@@ -158,11 +161,27 @@ def _read_xlsx(path: Path) -> str:
     return "\n".join(out)
 
 
-def load_document(path: str | Path) -> LoadedDoc:
+def _read_pdf_text(path: Path) -> str:
+    from pypdf import PdfReader
+
+    pages = []
+    for i, page in enumerate(PdfReader(str(path)).pages, 1):
+        pages.append(f"[Página {i}]\n{page.extract_text() or ''}")
+    return "\n\n".join(pages)
+
+
+def load_document(path: str | Path, native_pdf: bool = True) -> LoadedDoc:
+    """native_pdf=True envía el PDF a Claude; False extrae texto (para modelos locales)."""
     path = Path(path)
     ext = path.suffix.lower()
     if ext not in SUPPORTED:
         raise ValueError(f"Formato no soportado: {path.name}")
+
+    if ext == ".pdf" and not native_pdf:
+        text = _read_pdf_text(path)
+        if len(text.strip()) < 50:
+            raise ValueError(f"{path.name} parece un PDF escaneado (sin texto); requiere OCR o un modelo con visión.")
+        return LoadedDoc(path.name, [_text_block(text)])
 
     if ext == ".pdf":
         data = path.read_bytes()
@@ -193,41 +212,50 @@ def load_document(path: str | Path) -> LoadedDoc:
 
 # --------------------------------------------------------------------------- llamadas
 
-def _call_json(client: anthropic.Anthropic, cfg: ReviewConfig, system: str,
-               content: list[dict], schema: dict) -> dict:
-    """Llama a Claude con salida estructurada y devuelve el JSON parseado."""
-    params = dict(
-        model=cfg.model,
-        max_tokens=cfg.max_tokens,
-        system=system,
-        thinking={"type": "adaptive"},
-        output_config={"effort": cfg.effort, "format": {"type": "json_schema", "schema": schema}},
-        messages=[{"role": "user", "content": content}],
-    )
+class ClaudeLLM:
+    """Backend que usa la API de Claude (requiere ANTHROPIC_API_KEY)."""
 
-    def run(use_fallbacks: bool):
-        if use_fallbacks:
-            ctx = client.beta.messages.stream(
-                **params, betas=["server-side-fallback-2026-07-01"], fallbacks="default"
-            )
-        else:
-            ctx = client.messages.stream(**params)
-        with ctx as stream:
-            return stream.get_final_message()
+    native_pdf = True
+    chunk_chars = 0  # 0 = sin troceado (contexto de 1M tokens)
 
-    try:
-        msg = run(cfg.use_fallbacks)
-    except anthropic.BadRequestError:
-        if not cfg.use_fallbacks:
-            raise
-        msg = run(False)  # la cuenta/plataforma no acepta fallbacks: reintenta sin ellos
+    def __init__(self, cfg: ReviewConfig, client=None):
+        self.cfg = cfg
+        self.client = client or anthropic.Anthropic()
 
-    if msg.stop_reason == "refusal":
-        raise RuntimeError(f"La solicitud fue rechazada por los clasificadores de seguridad: {msg.stop_details}")
-    if msg.stop_reason == "max_tokens":
-        raise RuntimeError("La respuesta se cortó por max_tokens; sube ReviewConfig.max_tokens.")
-    text = next(b.text for b in msg.content if b.type == "text")
-    return json.loads(text)
+    def generate_json(self, system: str, content: list[dict], schema: dict) -> dict:
+        cfg, client = self.cfg, self.client
+        params = dict(
+            model=cfg.model,
+            max_tokens=cfg.max_tokens,
+            system=system,
+            thinking={"type": "adaptive"},
+            output_config={"effort": cfg.effort, "format": {"type": "json_schema", "schema": schema}},
+            messages=[{"role": "user", "content": content}],
+        )
+
+        def run(use_fallbacks: bool):
+            if use_fallbacks:
+                ctx = client.beta.messages.stream(
+                    **params, betas=["server-side-fallback-2026-07-01"], fallbacks="default"
+                )
+            else:
+                ctx = client.messages.stream(**params)
+            with ctx as stream:
+                return stream.get_final_message()
+
+        try:
+            msg = run(cfg.use_fallbacks)
+        except anthropic.BadRequestError:
+            if not cfg.use_fallbacks:
+                raise
+            msg = run(False)  # la cuenta/plataforma no acepta fallbacks: reintenta sin ellos
+
+        if msg.stop_reason == "refusal":
+            raise RuntimeError(f"La solicitud fue rechazada por los clasificadores de seguridad: {msg.stop_details}")
+        if msg.stop_reason == "max_tokens":
+            raise RuntimeError("La respuesta se cortó por max_tokens; sube ReviewConfig.max_tokens.")
+        text = next(b.text for b in msg.content if b.type == "text")
+        return json.loads(text)
 
 
 def _build_system(cfg: ReviewConfig) -> str:
@@ -238,19 +266,68 @@ def _build_system(cfg: ReviewConfig) -> str:
     return system
 
 
-def review_document(client: anthropic.Anthropic, doc: LoadedDoc, cfg: ReviewConfig) -> dict:
-    content = list(doc.blocks) + [
-        _text_block(
-            f"Revisa el documento «{doc.name}» según el checklist. "
-            "Numera los hallazgos como H-01, H-02, ... ordenados por severidad."
-        )
-    ]
-    result = _call_json(client, cfg, _build_system(cfg), content, REVIEW_SCHEMA)
-    result["documento"] = doc.name
-    return result
+def _split_text(text: str, max_chars: int) -> list[str]:
+    """Trocea por líneas sin superar max_chars (una línea larga se parte)."""
+    chunks, cur, size = [], [], 0
+    for line in text.splitlines():
+        while len(line) > max_chars:
+            if cur:
+                chunks.append("\n".join(cur)); cur, size = [], 0
+            chunks.append(line[:max_chars]); line = line[max_chars:]
+        if size + len(line) + 1 > max_chars and cur:
+            chunks.append("\n".join(cur)); cur, size = [], 0
+        cur.append(line); size += len(line) + 1
+    if cur:
+        chunks.append("\n".join(cur))
+    return chunks
 
 
-def cross_check(client: anthropic.Anthropic, reviews: list[dict], cfg: ReviewConfig) -> dict:
+def _global_assessment(hallazgos: list[dict]) -> str:
+    sev = {h["severidad"] for h in hallazgos}
+    if "critica" in sev or "mayor" in sev:
+        return "requiere_revision"
+    return "aprobado_con_comentarios" if sev else "aprobado"
+
+
+def review_document(llm, doc: LoadedDoc, cfg: ReviewConfig) -> dict:
+    system = _build_system(cfg)
+    ask = ("Revisa el documento «{name}»{part} según el checklist. "
+           "Numera los hallazgos como H-01, H-02, ... ordenados por severidad.")
+    limit = getattr(llm, "chunk_chars", 0)
+    texts = [b["text"] for b in doc.blocks if b["type"] == "text"]
+    needs_split = limit and texts and sum(len(t) for t in texts) > limit
+
+    if not needs_split:
+        content = list(doc.blocks) + [_text_block(ask.format(name=doc.name, part=""))]
+        result = llm.generate_json(system, content, REVIEW_SCHEMA)
+        result["documento"] = doc.name
+        return result
+
+    # Documento largo en modelo con contexto reducido: revisar por partes y fusionar.
+    chunks = _split_text("\n".join(texts), limit)
+    parts = []
+    for i, chunk in enumerate(chunks, 1):
+        print(f"  parte {i}/{len(chunks)}")
+        part = f" (parte {i} de {len(chunks)}; revisa solo lo que aparece en esta parte)"
+        content = [_text_block(chunk), _text_block(ask.format(name=doc.name, part=part))]
+        parts.append(llm.generate_json(system, content, REVIEW_SCHEMA))
+
+    hallazgos = [h for r in parts for h in r["hallazgos"]]
+    hallazgos.sort(key=lambda h: _SEV_ORDER[h["severidad"]])
+    for n, h in enumerate(hallazgos, 1):
+        h["id"] = f"H-{n:02d}"
+    faltante = list(dict.fromkeys(x for r in parts for x in r["informacion_faltante"]))
+    return {
+        "documento": doc.name,
+        "tipo_documento": parts[0]["tipo_documento"],
+        "resumen": " ".join(r["resumen"] for r in parts),
+        "evaluacion_global": _global_assessment(hallazgos),
+        "hallazgos": hallazgos,
+        "informacion_faltante": faltante,
+    }
+
+
+def cross_check(llm, reviews: list[dict], cfg: ReviewConfig) -> dict:
     resumen = [
         {"documento": r["documento"], "tipo": r["tipo_documento"], "resumen": r["resumen"],
          "hallazgos": [{k: h[k] for k in ("id", "severidad", "problema", "evidencia")} for h in r["hallazgos"]]}
@@ -262,7 +339,7 @@ def cross_check(client: anthropic.Anthropic, reviews: list[dict], cfg: ReviewCon
         "alcance, referencias cruzadas). No repitas hallazgos internos de un solo documento.\n\n"
         + json.dumps(resumen, ensure_ascii=False, indent=2)
     )
-    return _call_json(client, cfg, SYSTEM_PROMPT, [_text_block(prompt)], CROSS_SCHEMA)
+    return llm.generate_json(SYSTEM_PROMPT, [_text_block(prompt)], CROSS_SCHEMA)
 
 
 # --------------------------------------------------------------------------- informe
@@ -330,9 +407,10 @@ def write_outputs(out_dir: Path, reviews: list[dict], cross: dict | None, errors
 # --------------------------------------------------------------------------- entrada
 
 def review_folder(in_dir: str | Path, out_dir: str | Path, cfg: ReviewConfig | None = None,
-                  client: anthropic.Anthropic | None = None) -> dict:
+                  client=None, llm=None) -> dict:
+    """llm: backend con .generate_json(); por defecto Claude. Para modelo local ver local_llm.LocalLLM."""
     cfg = cfg or ReviewConfig()
-    client = client or anthropic.Anthropic()
+    llm = llm or ClaudeLLM(cfg, client)
     paths = sorted(p for p in Path(in_dir).rglob("*") if p.is_file() and p.suffix.lower() in SUPPORTED)
     if not paths:
         raise FileNotFoundError(f"No hay documentos soportados en {in_dir} ({', '.join(sorted(SUPPORTED))})")
@@ -341,7 +419,7 @@ def review_folder(in_dir: str | Path, out_dir: str | Path, cfg: ReviewConfig | N
     for p in paths:
         print(f"Revisando {p.name} ...")
         try:
-            reviews.append(review_document(client, load_document(p), cfg))
+            reviews.append(review_document(llm, load_document(p, llm.native_pdf), cfg))
         except Exception as e:  # un documento defectuoso no debe frenar el lote
             errors[p.name] = f"{type(e).__name__}: {e}"
             print(f"  ! {errors[p.name]}")
@@ -350,7 +428,7 @@ def review_folder(in_dir: str | Path, out_dir: str | Path, cfg: ReviewConfig | N
     if cfg.cross_check and len(reviews) > 1:
         print("Revisando consistencia entre documentos ...")
         try:
-            cross = cross_check(client, reviews, cfg)
+            cross = cross_check(llm, reviews, cfg)
         except Exception as e:
             errors["(consistencia)"] = f"{type(e).__name__}: {e}"
 

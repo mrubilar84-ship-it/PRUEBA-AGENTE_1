@@ -49,6 +49,10 @@ class GeminiLLM:
             key = api_key or os.environ.get("GEMINI_API_KEY") or os.environ.get("GOOGLE_API_KEY")
             if not key:
                 raise RuntimeError("Falta la clave: define GEMINI_API_KEY (en Kaggle: Add-ons → Secrets).")
+            key = key.strip().strip("\"'")  # tolera espacios, saltos de línea o comillas al pegar
+            if not key.startswith("AIza"):
+                print("AVISO: la clave no empieza con «AIza»; las claves de Google AI Studio suelen empezar así. "
+                      "¿Copiaste el ID del proyecto en vez de la clave?")
             client = genai.Client(api_key=key)
         self.client = client
 

@@ -8,18 +8,18 @@ Agente basado en Claude que revisa documentos técnicos (memorias de cálculo, e
 
 Formatos: planos PDF/PNG/JPG (visión), PDF (nativo con Claude; texto extraído con el modelo local), DOCX, XLSX/XLSM (valores y fórmulas), CSV, TXT, MD.
 
-## Tres modos
-Además de Claude y el modelo local, el agente puede usar **Gemini** (`gemini_llm.py`, notebook `kaggle_revision_documentos_gemini.ipynb`): `llm = GeminiLLM()` con la clave `GEMINI_API_KEY` en Kaggle Secrets. No necesita GPU, ve imágenes (planos) y tiene contexto largo (sin troceado). Hay clave gratuita en Google AI Studio con límites bajos que cambian (el backend reintenta ante 429); **en el plan gratuito Google puede usar los datos enviados para mejorar sus productos y revisores humanos pueden leerlos: no lo uses con documentos confidenciales** (con facturación activada se excluye). El modelo se cambia con `GeminiLLM("modelo")` o la variable `GEMINI_MODEL`; verifica en AI Studio los modelos disponibles.
-
-## Dos modos (Claude y local)
-| | Modelo local gratis (Qwen2.5) | API de Claude |
-|---|---|---|
-| Costo | Gratis (GPU de Kaggle) | De pago |
-| Notebook | `kaggle_revision_documentos.ipynb` | `kaggle_revision_documentos_claude.ipynb` |
-| PDF | Solo texto (escaneados no) | Nativo, con tablas y figuras |
-| Planos | Con `LocalVLM` (visión local, limitada en planos densos) | Visión de alta calidad |
-| Calidad | Buena para checklist y cifras simples; puede errar en cálculos largos | Mayor |
-| Documentos largos | Se revisan por partes y se fusionan | Una sola pasada |
+## Tres opciones de modelo
+| | Modelo local gratis (Qwen2.5) | API de Claude | API de Gemini |
+|---|---|---|---|
+| Costo | Gratis (GPU de Kaggle) | De pago | Clave gratis con límites bajos, o de pago |
+| Notebook | `kaggle_revision_documentos.ipynb` | `kaggle_revision_documentos_claude.ipynb` | `kaggle_revision_documentos_gemini.ipynb` |
+| Secreto en Kaggle | (ninguno) | `ANTHROPIC_API_KEY` | `GEMINI_API_KEY` |
+| GPU | Sí (T4 x2) | No | No |
+| PDF | Solo texto (escaneados no) | Nativo, con tablas y figuras | Texto extraído + imágenes en planos |
+| Planos | Con `LocalVLM` (visión local, limitada en planos densos) | Visión de alta calidad | Visión (modelo en la nube) |
+| Calidad | Buena para checklist y cifras simples; puede errar en cálculos largos | Mayor | Alta (según el modelo elegido) |
+| Documentos largos | Se revisan por partes y se fusionan | Una sola pasada | Una sola pasada |
+| Confidencialidad | Nada sale de Kaggle | Datos a la API de Anthropic | En el plan gratuito Google puede usar los datos para mejorar sus productos: **no usar con documentos confidenciales** |
 
 ## Ejecutar en Kaggle (modo gratis)
 1. *Settings → Accelerator*: GPU T4 x2; *Internet: On* (solo para bajar el modelo).
@@ -30,6 +30,13 @@ Además de Claude y el modelo local, el agente puede usar **Gemini** (`gemini_ll
 1. Mismos datasets que arriba; importa `kaggle_revision_documentos_claude.ipynb`.
 2. *Settings → Internet: On*; en *Add-ons → Secrets* agrega `ANTHROPIC_API_KEY`.
 3. Ajusta `IN_DIR`, la norma y el contexto en `ReviewConfig`, y ejecuta todo.
+
+## Ejecutar con Gemini (clave gratis o de pago)
+1. Crea una clave en [Google AI Studio](https://aistudio.google.com/apikey).
+2. *Settings → Internet: On* (no necesitas GPU); en *Add-ons → Secrets* agrega `GEMINI_API_KEY`.
+3. Mismos datasets que arriba, más `gemini_llm.py`; importa `kaggle_revision_documentos_gemini.ipynb`.
+4. Ajusta `IN_DIR`, la norma y el contexto en `ReviewConfig`, y ejecuta todo. El modelo por defecto es `gemini-2.5-flash`; cámbialo con `GeminiLLM("modelo")` o la variable `GEMINI_MODEL` (verifica en AI Studio los modelos disponibles).
+5. En el plan gratuito los límites son bajos y cambian (el agente espera y reintenta ante errores 429), y Google puede usar los datos enviados para mejorar sus productos: no lo uses con documentos confidenciales sin activar facturación.
 
 ## Planos de ingeniería (PDF impresos desde DWG)
 `plan_review.py` revisa **cada hoja mirando su imagen**: vista general, cajetín ampliado y 4 cuadrantes ampliados, más el texto vectorial del PDF (si el CAD lo imprimió como texto). Entrega por hoja: datos del cajetín (n° de plano, revisión, escala, responsables…) y hallazgos según `checklist_planos.md` (cajetín, control de revisiones, escala, cotas y cadenas que no cierran, cortes/detalles sin referencia, simbología y notas, lista de materiales, legibilidad). En multi-hoja compara numeración y revisiones entre planos.

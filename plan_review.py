@@ -11,6 +11,7 @@ from __future__ import annotations
 import base64
 import io
 import re
+import tempfile
 from pathlib import Path
 
 import pymupdf
@@ -98,7 +99,7 @@ def sheet_text(page, limit: int = 6000) -> tuple[str, str]:
     return (full[:limit] + ("\n[... texto recortado ...]" if len(full) > limit else "")), tb[:1500]
 
 
-def _sheet_content(name: str, idx: int, total: int, page, llm, cfg: ReviewConfig) -> list[dict]:
+def _sheet_content(name: str, idx: int, total: int, page, llm, cfg: ReviewConfig, task: str | None = None) -> list[dict]:
     text, tb = sheet_text(page)
     vision = getattr(llm, "vision", False)
     parts, notes = [], []
@@ -117,7 +118,7 @@ def _sheet_content(name: str, idx: int, total: int, page, llm, cfg: ReviewConfig
     prompt = (f"Plano «{name}», hoja {idx} de {total}. {desc}\n" + "\n".join(notes) +
               (f"\n\nTEXTO VECTORIAL DE LA HOJA (puede estar desordenado o incompleto):\n{text}" if text else "") +
               (f"\n\nTEXTO EN LA ZONA DEL CAJETÍN:\n{tb}" if tb else "") +
-              "\n\nRevisa esta hoja según el checklist de planos. Numera los hallazgos H-01, H-02, ... por severidad.")
+              "\n\n" + (task or "Revisa esta hoja según el checklist de planos. Numera los hallazgos H-01, H-02, ... por severidad."))
     return parts + [_text_block(prompt)]
 
 
@@ -144,7 +145,7 @@ def review_plan_image(llm, path: Path, cfg: ReviewConfig) -> list[dict]:
     """Un plano entregado como imagen (png/jpg/tif): se convierte a PDF de una hoja y se revisa igual."""
     with pymupdf.open(path) as img:
         pdf_bytes = img.convert_to_pdf()
-    tmp = Path(path).with_suffix(".tmp_plan.pdf")
+    tmp = Path(tempfile.gettempdir()) / (path.stem + ".tmp_plan.pdf")  # /kaggle/input es de solo lectura
     try:
         tmp.write_bytes(pdf_bytes)
         res = review_plan_pdf(llm, tmp, cfg)
@@ -153,3 +154,141 @@ def review_plan_image(llm, path: Path, cfg: ReviewConfig) -> list[dict]:
     for r in res:
         r["documento"] = path.name
     return res
+
+
+# --------------------------------------------------------------------------- interpretación
+
+def _obj(**fields):
+    return {"type": "object", "properties": {k: {"type": "string"} for k in fields}, "required": list(fields),
+            "additionalProperties": False}
+
+
+def _arr(item):
+    return {"type": "array", "items": item}
+
+
+INTERPRET_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "tipo_plano": {"type": "string"},
+        "descripcion_general": {"type": "string"},
+        "cajetin": CAJETIN_SCHEMA,
+        "elementos": _arr(_obj(nombre="", descripcion="", ubicacion="")),
+        "dimensiones": _arr(_obj(elemento="", valor="", unidad="", ubicacion="")),
+        "materiales_y_especificaciones": _arr(_obj(posicion="", descripcion="", cantidad="", material_norma="")),
+        "notas": {"type": "array", "items": {"type": "string"}},
+        "referencias": _arr(_obj(tipo="", destino="", ubicacion="")),
+        "vistas_y_cortes": {"type": "array", "items": {"type": "string"}},
+        "no_legible": {"type": "array", "items": {"type": "string"}},
+    },
+    "required": ["tipo_plano", "descripcion_general", "cajetin", "elementos", "dimensiones",
+                 "materiales_y_especificaciones", "notas", "referencias", "vistas_y_cortes", "no_legible"],
+    "additionalProperties": False,
+}
+
+INTERPRET_SYSTEM = SYSTEM_PROMPT + """
+
+Tu tarea es INTERPRETAR planos de ingeniería: extraer con fidelidad qué muestra cada hoja para que luego se \
+puedan responder preguntas sin volver a mirarla. Reglas:
+- Transcribe solo lo que está escrito o claramente dibujado; no deduzcas ni midas sobre la imagen.
+- «descripcion_general»: qué representa la hoja y para qué sirve (3-6 frases).
+- «elementos»: componentes, equipos, tramos, ejes, marcas o tags identificables, con su ubicación en la hoja.
+- «dimensiones»: cada cota escrita con su elemento, valor y unidad; si la unidad no está explícita, usa la de las notas.
+- «materiales_y_especificaciones»: filas de la lista de materiales y especificaciones (posición, cantidad, material, norma).
+- «notas»: notas generales y específicas, textualmente. «referencias»: planos, cortes, detalles o normas citados.
+- «no_legible»: lo que existe pero no puedes leer con certeza. Mejor declararlo que inventarlo.
+- Campos desconocidos: "(no consta)"."""
+
+INTERPRET_TASK = ("Interpreta esta hoja: completa el JSON con la información que contiene (tipo de plano, descripción, "
+                  "cajetín, elementos, dimensiones, materiales y especificaciones, notas, referencias, vistas y cortes, "
+                  "y lo no legible).")
+
+
+def interpret_plan_pdf(llm, path: Path, cfg: ReviewConfig) -> list[dict]:
+    """Una interpretación por hoja, con 'documento', 'archivo' y 'pagina' para poder volver a la imagen."""
+    out = []
+    with pymupdf.open(path) as doc:
+        total = len(doc)
+        n = min(total, cfg.plan_max_pages)
+        if total > n:
+            print(f"  ! {path.name}: {total} hojas; se interpretan las primeras {n} (ReviewConfig.plan_max_pages)")
+        for i in range(n):
+            print(f"  interpretando hoja {i + 1}/{n}")
+            content = _sheet_content(path.name, i + 1, total, doc[i], llm, cfg, task=INTERPRET_TASK)
+            r = llm.generate_json(INTERPRET_SYSTEM, content, INTERPRET_SCHEMA)
+            r.update(documento=path.name if total == 1 else f"{path.name} · hoja {i + 1}",
+                     archivo=str(path), pagina=i + 1)
+            out.append(r)
+    return out
+
+
+def interpret_plan_image(llm, path: Path, cfg: ReviewConfig) -> list[dict]:
+    with pymupdf.open(path) as img:
+        pdf_bytes = img.convert_to_pdf()
+    pdf = Path(tempfile.gettempdir()) / (path.stem + ".plano.pdf")  # persiste en la sesión para volver a mirar la hoja
+    pdf.write_bytes(pdf_bytes)
+    res = interpret_plan_pdf(llm, pdf, cfg)
+    for r in res:
+        r["documento"] = path.name
+    return res
+
+
+def render_interpretation_md(plans: list[dict]) -> str:
+    out = ["# Interpretación de planos\n"]
+    for p in plans:
+        c = p["cajetin"]
+        out.append(f"## {p['documento']} — {p['tipo_plano']}\n")
+        out.append(f"**N° {c['numero']} · Rev. {c['revision']} · Escala {c['escala']} · {c['titulo']}**\n")
+        out.append(p["descripcion_general"] + "\n")
+        if p["dimensiones"]:
+            out.append("**Dimensiones**\n\n| Elemento | Valor | Unidad | Ubicación |\n|---|---|---|---|")
+            out += [f"| {d['elemento']} | {d['valor']} | {d['unidad']} | {d['ubicacion']} |" for d in p["dimensiones"]]
+            out.append("")
+        if p["materiales_y_especificaciones"]:
+            out.append("**Materiales y especificaciones**\n\n| Pos. | Descripción | Cant. | Material / norma |\n|---|---|---|---|")
+            out += [f"| {m['posicion']} | {m['descripcion']} | {m['cantidad']} | {m['material_norma']} |"
+                    for m in p["materiales_y_especificaciones"]]
+            out.append("")
+        if p["elementos"]:
+            out.append("**Elementos**\n")
+            out += [f"- {e['nombre']}: {e['descripcion']} ({e['ubicacion']})" for e in p["elementos"]]
+            out.append("")
+        for title, key in (("Notas", "notas"), ("Vistas y cortes", "vistas_y_cortes"), ("No legible", "no_legible")):
+            if p[key]:
+                out.append(f"**{title}**\n")
+                out += [f"- {x}" for x in p[key]]
+                out.append("")
+        if p["referencias"]:
+            out.append("**Referencias**\n")
+            out += [f"- {r['tipo']} → {r['destino']} ({r['ubicacion']})" for r in p["referencias"]]
+            out.append("")
+    return "\n".join(out)
+
+
+def interpret_folder(in_dir: str | Path, out_dir: str | Path, cfg: ReviewConfig | None = None, llm=None) -> list[dict]:
+    """Interpreta todos los planos (PDF de plano o imágenes) y guarda planos_interpretados.json / .md."""
+    import json
+
+    cfg = cfg or ReviewConfig()
+    if llm is None:
+        from doc_review_agent import ClaudeLLM
+        llm = ClaudeLLM(cfg)
+    if not getattr(llm, "vision", False):
+        print("AVISO: el modelo no ve imágenes; la interpretación se limitará al texto vectorial del PDF.")
+    plans, errors = [], {}
+    for p in sorted(Path(in_dir).rglob("*")):
+        ext = p.suffix.lower()
+        if p.is_file() and not p.name.endswith(".plano.pdf") and (ext in IMAGE_EXTS or (ext == ".pdf" and is_plan_pdf(p, cfg.plan_mode))):
+            print(f"Interpretando {p.name} ...")
+            try:
+                plans += (interpret_plan_image if ext in IMAGE_EXTS else interpret_plan_pdf)(llm, p, cfg)
+            except Exception as e:
+                errors[p.name] = f"{type(e).__name__}: {e}"
+                print(f"  ! {errors[p.name]}")
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    (out / "planos_interpretados.json").write_text(
+        json.dumps({"planos": plans, "errores": errors}, ensure_ascii=False, indent=2), encoding="utf-8")
+    (out / "planos_interpretados.md").write_text(render_interpretation_md(plans), encoding="utf-8")
+    print(f"Listo: {len(plans)} hojas interpretadas, {len(errors)} con error -> {out}")
+    return plans

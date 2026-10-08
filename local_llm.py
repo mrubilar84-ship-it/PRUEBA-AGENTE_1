@@ -152,9 +152,10 @@ class LocalVLM(LocalLLM):
     """
     vision = True
     image_max_side = 1400  # px del lado mayor por imagen (≈1.2 Mpx -> ~1.5k tokens visuales)
+    qa_tiles = False  # en el chat solo vista general + cajetín (rápido); la interpretación ya usó los cuadrantes
 
     def __init__(self, model: str = "Qwen/Qwen2.5-VL-7B-Instruct", load_4bit: bool = True,
-                 max_new_tokens: int = 3000, retries: int = 2):
+                 max_new_tokens: int = 4500, retries: int = 2):
         import torch
         from transformers import AutoProcessor, BitsAndBytesConfig, Qwen2_5_VLForConditionalGeneration
 

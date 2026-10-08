@@ -159,3 +159,75 @@ def test_plan_mode_never_trata_pdf_como_documento(tmp_path):
     f = tmp_path / "plano_ejemplo.pdf"
     shutil.copy(Path(__file__).resolve().parents[1] / "samples" / "plano_ejemplo.pdf", f)
     assert P.is_plan_pdf(f, "auto") and not P.is_plan_pdf(f, "never") and P.is_plan_pdf(f, "always")
+
+
+# ---- interpretación de planos + chat que mira la hoja relevante
+import plan_review as P
+
+
+def _interp(numero, desc):
+    base = {k: "(no consta)" for k in ("titulo", "proyecto", "revision", "fecha", "escala", "unidades", "hoja",
+                                       "dibujo", "reviso", "aprobo")}
+    return {"tipo_plano": "planta", "descripcion_general": desc, "cajetin": {**base, "numero": numero},
+            "elementos": [{"nombre": "V-12", "descripcion": "viga de acero", "ubicacion": "centro"}],
+            "dimensiones": [{"elemento": "luz total", "valor": "600", "unidad": "mm", "ubicacion": "arriba"}],
+            "materiales_y_especificaciones": [], "notas": ["Acero A36"], "referencias": [],
+            "vistas_y_cortes": [], "no_legible": []}
+
+
+class _VisionFake:
+    native_pdf, vision, chunk_chars = False, True, 0
+    qa_tiles = False
+    n = 0
+
+    def generate_json(self, system, content, schema):
+        _VisionFake.n += 1
+        return _interp(f"ST-0{_VisionFake.n}", "Planta de la viga" if _VisionFake.n == 1 else "Detalle de soldadura")
+
+    def generate_text(self, system, user, images=None):
+        self.user, self.images = user, images
+        return "respuesta"
+
+
+def _two_sheet_pdf(path):
+    doc = pymupdf_open()
+    for t in ("PLANTA VIGA V-12", "DETALLE SOLDADURA D-1"):
+        pg = doc.new_page(width=1191, height=842)
+        pg.insert_text((100, 100), t, fontsize=14)
+    doc.save(str(path))
+
+
+def pymupdf_open():
+    import pymupdf
+    return pymupdf.open()
+
+
+def test_interpretar_y_preguntar_con_imagen(tmp_path):
+    _two_sheet_pdf(tmp_path / "plano_dos.pdf")
+    llm = _VisionFake()
+    plans = P.interpret_folder(tmp_path, tmp_path / "out", d.ReviewConfig(), llm=llm)
+    assert len(plans) == 2 and plans[1]["pagina"] == 2
+    md = (tmp_path / "out" / "planos_interpretados.md").read_text(encoding="utf-8")
+    assert "luz total" in md and (tmp_path / "out" / "planos_interpretados.json").exists()
+
+    chat = C.DocChat(llm)
+    chat.add_plans(tmp_path / "out" / "planos_interpretados.json")
+    out = chat.ask("¿Qué muestra la hoja 2?")
+    assert len(llm.images) == 4  # 2 hojas candidatas × (vista general + cajetín)
+    assert "plano_dos.pdf · hoja 2: vista general" in llm.user  # la hoja nombrada va primero
+    assert "INTERPRETACIÓN DE PLANOS" in llm.user and "plano, imagen + interpretación" in out
+
+
+def test_chat_planos_sin_vision_responde_con_interpretacion(tmp_path):
+    _two_sheet_pdf(tmp_path / "plano_dos.pdf")
+    v = _VisionFake()
+    plans = P.interpret_folder(tmp_path, tmp_path / "out", d.ReviewConfig(), llm=v)
+
+    class TextOnly:
+        vision = False
+        def generate_text(self, system, user): self.user = user; return "ok"
+    t = TextOnly()
+    chat = C.DocChat(t)
+    chat.add_plans(plans)
+    out = chat.ask("¿Cuál es la luz total de la viga?")
+    assert "Cota luz total = 600 mm" in t.user and "interpretación)" in out

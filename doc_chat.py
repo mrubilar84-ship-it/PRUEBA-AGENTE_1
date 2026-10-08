@@ -33,6 +33,9 @@ y explica el porqué, no solo qué dice el texto.
 normas ni páginas.
 - Cita la fuente de los datos clave entre corchetes, por ejemplo [memoria.pdf, p. 3] o [hallazgo H-02].
 - En cálculos, muestra los pasos con unidades.
+- Si hay INTERPRETACIÓN DE PLANOS, úsala como base para describir y explicar los planos; si además recibes \
+imágenes de la hoja, úsalas para verificar y completar, pero no midas sobre la imagen: usa solo cotas escritas. \
+Si la interpretación y la imagen difieren, dilo.
 - Responde en español, claro y directo."""
 
 SUMMARY_SYSTEM = ("Eres un ingeniero que resume documentos técnicos en español: objetivo, datos y criterios clave, "
@@ -108,12 +111,16 @@ class BM25:
 
 class DocChat:
     def __init__(self, llm, top_k: int = 6, max_history: int = 4, max_chars: int = 1500,
-                 full_context_chars: int = 30000, digest_chars: int = 7000):
+                 full_context_chars: int = 30000, digest_chars: int = 7000, look_sheets: int = 2):
         """full_context_chars: si todos los documentos suman menos que esto (~9k tokens), se entregan completos
         al modelo; si no, solo los pasajes más relevantes. La revisión se entrega siempre."""
         self.llm, self.top_k, self.max_history, self.max_chars = llm, top_k, max_history, max_chars
         self.full_context_chars, self.digest_chars = full_context_chars, digest_chars
+        self.look_sheets = look_sheets
         self.review_digest = ""
+        self.plans: list[dict] = []  # interpretaciones de planos (una por hoja)
+        self.plan_passages: list[Passage] = []
+        self._plan_index: BM25 | None = None
         self.passages: list[Passage] = []
         self.texts: dict[str, str] = {}
         self.history: list[tuple[str, str]] = []
@@ -161,6 +168,31 @@ class DocChat:
             digest = digest[:self.digest_chars] + "\n[... revisión recortada por tamaño ...]"
         self.review_digest = digest
 
+    def add_plans(self, interpretations: str | Path | list[dict]) -> None:
+        """Incorpora planos interpretados (planos_interpretados.json o la lista que devuelve interpret_folder)."""
+        if not isinstance(interpretations, list):
+            interpretations = json.loads(Path(interpretations).read_text(encoding="utf-8"))["planos"]
+        for pl in interpretations:
+            self.plans.append(pl)
+            sheet = pl["documento"]
+            c = pl["cajetin"]
+            head = (f"PLANO {sheet}: {pl['tipo_plano']}. N° {c['numero']}, título {c['titulo']}, rev. {c['revision']}, "
+                    f"escala {c['escala']}, fecha {c['fecha']}, proyecto {c['proyecto']}. {pl['descripcion_general']}")
+            texts = [head]
+            texts += [f"Elemento {e['nombre']}: {e['descripcion']} ({e['ubicacion']})" for e in pl["elementos"]]
+            texts += [f"Cota {d['elemento']} = {d['valor']} {d['unidad']} ({d['ubicacion']})" for d in pl["dimensiones"]]
+            texts += [f"Material pos. {m['posicion']}: {m['descripcion']}, cant. {m['cantidad']}, {m['material_norma']}"
+                      for m in pl["materiales_y_especificaciones"]]
+            texts += [f"Nota: {n}" for n in pl["notas"]]
+            texts += [f"Referencia {r['tipo']} → {r['destino']} ({r['ubicacion']})" for r in pl["referencias"]]
+            texts += [f"Vista/corte: {v}" for v in pl["vistas_y_cortes"]]
+            texts += [f"No legible: {n}" for n in pl["no_legible"]]
+            # agrupa de a ~8 líneas para que cada pasaje conserve contexto
+            for i in range(0, len(texts), 8):
+                self.plan_passages.append(Passage(sheet, "interpretación", "\n".join(texts[i:i + 8])))
+        self._plan_index = None
+        print(f"{len(interpretations)} hojas de planos incorporadas ({len(self.plan_passages)} pasajes).")
+
     # ---- uso
     def _search(self, query: str) -> list[Passage]:
         if self._index is None:
@@ -178,22 +210,76 @@ class DocChat:
         ctx = "\n\n".join(f"[FRAGMENTO {i} | {p.doc}, {p.label}]\n{p.text}" for i, p in enumerate(found, 1))
         return ctx, list(dict.fromkeys(f"{p.doc} ({p.label})" for p in found))
 
-    def ask(self, question: str, show_sources: bool = True) -> str:
-        if not self.passages:
+    def _plan_context(self, question: str, k: int = 10) -> tuple[str, list[dict]]:
+        """Pasajes de la interpretación de planos relevantes + hojas candidatas para mirar la imagen."""
+        if not self.plan_passages:
+            return "", []
+        if self._plan_index is None:
+            self._plan_index = BM25(self.plan_passages)
+        query = question if not self.history else f"{self.history[-1][0]} {question}"
+        found = self._plan_index.search(query, k)
+        by_sheet = {pl["documento"]: pl for pl in self.plans}
+        ctx = "\n\n".join(f"[{p.doc}]\n{p.text}" for p in found)
+        # hojas a mirar: la nombrada en la pregunta ("hoja 2", n° de plano) o las mejor puntuadas
+        q = question.lower()
+        named = [pl for pl in self.plans
+                 if (pl["cajetin"]["numero"] and pl["cajetin"]["numero"].lower() in q and pl["cajetin"]["numero"] != "(no consta)")
+                 or pl["documento"].lower() in q]
+        m = re.search(r"hoja\s*(\d+)", q)
+        if m:
+            named += [pl for pl in self.plans if pl["pagina"] == int(m.group(1))]
+        ranked = [by_sheet[p.doc] for p in found if p.doc in by_sheet]
+        sheets = []
+        for pl in named + ranked:
+            if pl not in sheets:
+                sheets.append(pl)
+        return ctx, sheets[:self.look_sheets]
+
+    def ask(self, question: str, show_sources: bool = True, look: bool | str = "auto") -> str:
+        """look='auto': si el modelo ve imágenes y hay planos, adjunta la(s) hoja(s) relevante(s) a la pregunta."""
+        if not self.passages and not self.plan_passages:
             return "No hay documentos cargados."
-        ctx, sources = self._context(question)
+        ctx, sources = self._context(question) if self.passages else ("", [])
+        plan_ctx, sheets = self._plan_context(question)
+        images, legend = [], []
+        if look and getattr(self.llm, "vision", False) and sheets:
+            import pymupdf
+
+            from plan_review import sheet_images
+
+            for pl in sheets:
+                try:
+                    with pymupdf.open(pl["archivo"]) as pdf:
+                        imgs = sheet_images(pdf[pl["pagina"] - 1], getattr(self.llm, "image_max_side", 1500),
+                                            getattr(self.llm, "qa_tiles", True))
+                except Exception as e:  # el PDF ya no está disponible: se responde solo con la interpretación
+                    print(f"  (no pude abrir {pl['archivo']}: {e})")
+                    continue
+                for desc, png in imgs:
+                    images.append(png)
+                    legend.append(f"{pl['documento']}: {desc}")
         hist = "".join(f"Usuario: {q}\nAsistente: {a}\n\n" for q, a in self.history[-self.max_history:])
         parts = []
         if self.review_digest:
             parts.append("REVISIÓN PREVIA:\n" + self.review_digest)
-        parts.append("DOCUMENTOS:\n" + (ctx or "(sin fragmentos relevantes para esta pregunta)"))
+        if ctx or not plan_ctx:
+            parts.append("DOCUMENTOS:\n" + (ctx or "(sin fragmentos relevantes para esta pregunta)"))
+        if plan_ctx:
+            parts.append("INTERPRETACIÓN DE PLANOS (extraída previamente de cada hoja):\n" + plan_ctx)
+        if images:
+            parts.append("Se adjuntan imágenes en este orden: " + "; ".join(f"{i}) {d}" for i, d in enumerate(legend, 1)) + ".")
         if hist:
             parts.append("CONVERSACIÓN PREVIA:\n" + hist.rstrip())
         parts.append("PREGUNTA: " + question)
-        answer = self.llm.generate_text(CHAT_SYSTEM, "\n\n".join(parts))
+        user = "\n\n".join(parts)
+        answer = (self.llm.generate_text(CHAT_SYSTEM, user, images=images) if images
+                  else self.llm.generate_text(CHAT_SYSTEM, user))
         self.history.append((question, answer))
-        if show_sources and sources:
-            answer += "\n\nContexto usado: " + "; ".join(sources)
+        if show_sources:
+            how = "imagen + interpretación" if images else "interpretación"
+            used = sources + [f"{pl['documento']} (plano, {how})" for pl in sheets]
+            if used:
+                answer += "\n\nContexto usado: " + "; ".join(dict.fromkeys(used))
         return answer
 
     def ask_image(self, question: str, pdf_path: str | Path, page: int = 1, tiles: bool = True) -> str:

@@ -33,11 +33,12 @@ Formatos: planos PDF/PNG/JPG (visión), PDF (nativo con Claude; texto extraído 
 - Detección automática: PDF de formato ≥ A3 o con «plano/lámina/dwg» en el nombre (`ReviewConfig(plan_mode="always")` para forzar; `"never"` para desactivar). También acepta PNG/JPG/TIF.
 - Modo gratis: `LocalVLM("Qwen/Qwen2.5-VL-7B-Instruct")` (visión local en Kaggle). Es más lento (varios minutos por hoja con cuadrantes; `plan_tiles=False` acelera) y **lee peor los textos pequeños** en planos densos. Con un modelo solo-texto (`LocalLLM`) solo se revisa el texto vectorial y se avisa.
 - Modo Claude: lee planos con mucha más fiabilidad.
-- Preguntas sobre un plano: `chat.ask_image("¿Las cotas suman el total?", "plano.pdf", page=1)`.
+- **Interpretar y preguntar:** `interpret_folder(IN_DIR, OUT, cfg, llm=llm)` extrae de cada hoja el tipo de plano, cajetín, elementos, cotas (valor, unidad, ubicación), materiales y especificaciones, notas, referencias, vistas/cortes y lo no legible; guarda `planos_interpretados.md/json`. Luego `chat.add_plans(planos)` y `chat.ask("¿Cuál es la luz total de la viga V-12?")`: el agente busca en la interpretación y, si el modelo ve imágenes, **adjunta la hoja relevante** (la que nombras: «hoja 2», n° de plano; si no, las mejor puntuadas) para verificar lo que ve. Responde citando de dónde sale cada dato y señala si interpretación e imagen difieren.
+- Preguntas visuales puntuales sobre una hoja: `chat.ask_image("¿Las cotas suman el total?", "plano.pdf", page=1)`.
 - Limitaciones: no mide sobre la imagen ni lee el DWG (solo el PDF); los hallazgos hay que verificarlos en el DWG. Un PDF con el texto convertido a líneas o escaneado depende solo de la imagen (lectura menos confiable).
 - Prueba: `samples/plano_ejemplo.pdf` (cotas 100+200+250 ≠ 600, cajetín sin revisión/revisó/aprobó, corte A-A sin vista); se regenera con `samples/generar_plano_ejemplo.py`.
 
-## Chat con los documentos (preguntas y resúmenes)
+## Chat con los documentos y planos (preguntas y resúmenes)
 Después de la revisión, el mismo notebook tiene un chat (`doc_chat.py`):
 ```python
 chat = DocChat(llm); chat.add_folder(IN_DIR); chat.add_review("/kaggle/working/informe/revision.json")

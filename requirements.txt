@@ -1,4 +1,5 @@
 anthropic>=1.12
+google-genai
 pypdf
 python-docx
 openpyxl

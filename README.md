@@ -8,7 +8,10 @@ Agente basado en Claude que revisa documentos técnicos (memorias de cálculo, e
 
 Formatos: planos PDF/PNG/JPG (visión), PDF (nativo con Claude; texto extraído con el modelo local), DOCX, XLSX/XLSM (valores y fórmulas), CSV, TXT, MD.
 
-## Dos modos
+## Tres modos
+Además de Claude y el modelo local, el agente puede usar **Gemini** (`gemini_llm.py`, notebook `kaggle_revision_documentos_gemini.ipynb`): `llm = GeminiLLM()` con la clave `GEMINI_API_KEY` en Kaggle Secrets. No necesita GPU, ve imágenes (planos) y tiene contexto largo (sin troceado). Hay clave gratuita en Google AI Studio con límites bajos que cambian (el backend reintenta ante 429); **en el plan gratuito Google puede usar los datos enviados para mejorar sus productos y revisores humanos pueden leerlos: no lo uses con documentos confidenciales** (con facturación activada se excluye). El modelo se cambia con `GeminiLLM("modelo")` o la variable `GEMINI_MODEL`; verifica en AI Studio los modelos disponibles.
+
+## Dos modos (Claude y local)
 | | Modelo local gratis (Qwen2.5) | API de Claude |
 |---|---|---|
 | Costo | Gratis (GPU de Kaggle) | De pago |

@@ -231,3 +231,61 @@ def test_chat_planos_sin_vision_responde_con_interpretacion(tmp_path):
     chat.add_plans(plans)
     out = chat.ask("¿Cuál es la luz total de la viga?")
     assert "Cota luz total = 600 mm" in t.user and "interpretación)" in out
+
+
+# ---- Gemini (cliente simulado)
+import base64
+import gemini_llm as G
+
+
+class _Resp:
+    def __init__(self, text): self.text = text
+
+
+class _GErr(Exception):
+    def __init__(self, code): self.code = code
+
+
+class _GClient:
+    def __init__(self, replies):
+        self.replies, self.calls = list(replies), []
+        self.models = self
+
+    def generate_content(self, model, contents, config):
+        self.calls.append((model, contents, config))
+        r = self.replies.pop(0)
+        if isinstance(r, Exception):
+            raise r
+        return _Resp(r)
+
+
+def test_gemini_json_con_imagen_y_reintento_429(monkeypatch):
+    monkeypatch.setattr(G.time, "sleep", lambda s: None)
+    reply = json.dumps({**FAKE_REVIEW, "evaluacion_global": "Requiere revisión", "extra": 1})
+    c = _GClient([_GErr(429), "no es json", reply])
+    llm = G.GeminiLLM(model="m", client=c)
+    img = {"type": "image", "source": {"type": "base64", "media_type": "image/png",
+                                       "data": base64.b64encode(b"\x89PNGfake").decode()}}
+    out = llm.generate_json("sys", [img, {"type": "text", "text": "revisa"}], d.REVIEW_SCHEMA)
+    assert out["evaluacion_global"] == "requiere_revision" and "extra" not in out
+    assert len(c.calls) == 3  # 429 -> reintento; texto no JSON -> reintento de parseo; luego OK
+    model, contents, cfg = c.calls[-1]
+    assert model == "m" and len(contents) == 2 and cfg.response_mime_type == "application/json"
+
+
+def test_gemini_texto_y_error_no_reintentable():
+    llm = G.GeminiLLM(client=_GClient(["hola"]))
+    assert llm.generate_text("s", "u") == "hola"
+    bad = G.GeminiLLM(client=_GClient([_GErr(400)]))
+    try:
+        bad.generate_text("s", "u"); assert False
+    except _GErr:
+        pass
+
+
+def test_gemini_sin_clave(monkeypatch):
+    monkeypatch.delenv("GEMINI_API_KEY", raising=False); monkeypatch.delenv("GOOGLE_API_KEY", raising=False)
+    try:
+        G.GeminiLLM(); assert False
+    except RuntimeError as e:
+        assert "GEMINI_API_KEY" in str(e)

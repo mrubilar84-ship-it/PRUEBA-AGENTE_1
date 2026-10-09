@@ -54,7 +54,7 @@ def _png_block(png: bytes) -> dict:
 def is_plan_pdf(path: Path, mode: str = "auto") -> bool:
     if mode == "always":
         return path.suffix.lower() == ".pdf"
-    if mode == "never":
+    if mode in ("never", "skip"):  # «skip» lo resuelve review_folder (que usa «auto» para decidir qué omitir)
         return False
     with pymupdf.open(path) as doc:
         if not len(doc):
@@ -278,7 +278,8 @@ def interpret_folder(in_dir: str | Path, out_dir: str | Path, cfg: ReviewConfig 
     plans, errors = [], {}
     for p in sorted(resolve_dir(in_dir).rglob("*")):
         ext = p.suffix.lower()
-        if p.is_file() and not is_project_file(p) and not p.name.endswith(".plano.pdf") and (ext in IMAGE_EXTS or (ext == ".pdf" and is_plan_pdf(p, cfg.plan_mode))):
+        if p.is_file() and not is_project_file(p) and not p.name.endswith(".plano.pdf") and (
+                (ext in IMAGE_EXTS and cfg.plan_mode not in ("never", "skip")) or (ext == ".pdf" and is_plan_pdf(p, cfg.plan_mode))):
             print(f"Interpretando {p.name} ...")
             try:
                 plans += (interpret_plan_image if ext in IMAGE_EXTS else interpret_plan_pdf)(llm, p, cfg)

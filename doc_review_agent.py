@@ -141,7 +141,10 @@ class ReviewConfig:
     cross_check: bool = True
     use_fallbacks: bool = True  # fallback server-side ante rechazos por clasificadores
     # --- planos (PDF impresos desde CAD / imágenes)
-    plan_mode: str = "auto"  # auto: PDF de formato ≥ A3 o con nombre de plano | always | never
+    # auto: PDF de formato ≥ A3 o con nombre de plano se revisa como plano | always: todo PDF es plano
+    # never: SOLO DOCUMENTOS: todo PDF se lee como documento de texto; las imágenes se ignoran
+    # skip:  SOLO DOCUMENTOS: se omiten (con aviso) los PDF que parecen planos y las imágenes
+    plan_mode: str = "auto"
     plan_checklist_path: Path = Path(__file__).with_name("checklist_planos.md")
     plan_tiles: bool = True  # además de la vista general y el cajetín, revisar 4 cuadrantes ampliados
     plan_max_pages: int = 20  # tope de hojas por PDF
@@ -478,11 +481,19 @@ def review_folder(in_dir: str | Path, out_dir: str | Path, cfg: ReviewConfig | N
     if not paths:
         raise FileNotFoundError(f"No hay documentos soportados en {in_dir} ({', '.join(sorted(SUPPORTED))})")
 
-    reviews, errors = [], {}
+    reviews, errors, skipped = [], {}, {}
+    docs_only = cfg.plan_mode in ("never", "skip")
     for p in paths:
+        ext = p.suffix.lower()
+        if docs_only and ext in IMAGE_EXTS:
+            skipped[p.name] = "imagen (se revisan solo documentos)"
+            continue
+        if cfg.plan_mode == "skip" and ext == ".pdf" and is_plan_pdf(p, "auto"):
+            skipped[p.name] = "parece un plano (se revisan solo documentos; usa plan_mode='never' si es un documento)"
+            continue
         print(f"Revisando {p.name} ...")
         try:
-            if p.suffix.lower() in IMAGE_EXTS or (p.suffix.lower() == ".pdf" and is_plan_pdf(p, cfg.plan_mode)):
+            if ext in IMAGE_EXTS or (ext == ".pdf" and is_plan_pdf(p, cfg.plan_mode)):
                 print("  (plano)")
                 fn = review_plan_image if p.suffix.lower() in IMAGE_EXTS else review_plan_pdf
                 reviews.extend(fn(llm, p, cfg))
@@ -491,6 +502,11 @@ def review_folder(in_dir: str | Path, out_dir: str | Path, cfg: ReviewConfig | N
         except Exception as e:  # un documento defectuoso no debe frenar el lote
             errors[p.name] = f"{type(e).__name__}: {e}"
             print(f"  ! {errors[p.name]}")
+
+    for name, why in skipped.items():
+        print(f"Omitido: {name}: {why}")
+    if not reviews and not errors:
+        raise FileNotFoundError(f"No quedó ningún documento por revisar en {in_dir} (omitidos: {list(skipped) or 'ninguno'}).")
 
     cross = None
     if cfg.cross_check and len(reviews) > 1:
@@ -501,8 +517,8 @@ def review_folder(in_dir: str | Path, out_dir: str | Path, cfg: ReviewConfig | N
             errors["(consistencia)"] = f"{type(e).__name__}: {e}"
 
     write_outputs(Path(out_dir), reviews, cross, errors)
-    print(f"Listo: {len(reviews)} revisados, {len(errors)} con error -> {out_dir}")
-    return {"revisiones": reviews, "consistencia": cross, "errores": errors}
+    print(f"Listo: {len(reviews)} revisados, {len(errors)} con error, {len(skipped)} omitidos -> {out_dir}")
+    return {"revisiones": reviews, "consistencia": cross, "errores": errors, "omitidos": skipped}
 
 
 if __name__ == "__main__":

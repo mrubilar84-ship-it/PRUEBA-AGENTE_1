@@ -132,7 +132,11 @@ class _Rec:
 
     def generate_json(self, system, content, schema):
         self.calls.append(content)
-        return json.loads(json.dumps(_plan_result())) if "cajetin" in schema["properties"] else dict(FAKE_CROSS)
+        if "cajetin" in schema["properties"]:
+            return json.loads(json.dumps(_plan_result()))
+        if "inconsistencias" in schema["properties"]:
+            return dict(FAKE_CROSS)
+        return json.loads(json.dumps(FAKE_REVIEW))
 
 
 def test_plano_con_vision_envia_imagenes(tmp_path):
@@ -421,3 +425,80 @@ def test_localllm_chat_compatible_con_transformers_4_y_5():
     llm._chat = lambda system, user, images=None: '{"tipo_documento":"X","resumen":"r","evaluacion_global":"aprobado","hallazgos":[],"informacion_faltante":[]}'
     out = llm.generate_json("s", [{"type": "text", "text": "doc"}], d.REVIEW_SCHEMA)
     assert out["evaluacion_global"] == "aprobado" and out["hallazgos"] == []
+
+
+# ---- administrador de documentos
+import doc_manager as DM
+
+
+def test_docfolder_agregar_varios_borrar_reemplazar(tmp_path, monkeypatch):
+    src = tmp_path / "ds" / "documento-1"; src.mkdir(parents=True)
+    (src / "a.txt").write_text("A1"); (src / "b.md").write_text("B1"); (src / "c.exe").write_text("x")
+    (src / "checklist_x.md").write_text("no"); (tmp_path / "suelto.txt").write_text("S")
+    monkeypatch.setattr(d, "KAGGLE_INPUT", tmp_path / "ds")
+    docs = DM.DocFolder(tmp_path / "work")
+
+    assert sorted(docs.add("documento-1")) == ["a.txt", "b.md"]  # por nombre de dataset; ignora .exe y checklists
+    assert docs.add(tmp_path / "suelto.txt") == ["suelto.txt"]
+    (src / "a.txt").write_text("A2")
+    assert docs.add(src / "a.txt") == []  # ya existe: se conserva
+    assert (tmp_path / "work" / "a.txt").read_text() == "A1"
+    assert docs.add(src / "a.txt", replace=True) == ["a.txt"] and (tmp_path / "work" / "a.txt").read_text() == "A2"
+
+    docs.replace("b.md", tmp_path / "suelto.txt")  # b.md se borra y queda suelto.txt actualizado
+    assert [p.name for p in docs.files()] == ["a.txt", "suelto.txt"]
+    assert docs.remove("*.txt") == ["a.txt", "suelto.txt"] and docs.files() == []
+    docs.add(src / "a.txt"); docs.clear()
+    assert docs.files(), "clear() sin confirm no debe borrar"
+    docs.clear(confirm=True)
+    assert docs.files() == []
+
+
+def test_replace_con_origen_en_la_misma_carpeta(tmp_path):
+    docs = DM.DocFolder(tmp_path / "w")
+    (tmp_path / "w" / "x.txt").write_text("v1")
+    docs.replace("x.txt", tmp_path / "w" / "x.txt")  # no debe perder el archivo
+    assert (tmp_path / "w" / "x.txt").read_text() == "v1"
+
+
+def test_guardar_subidos_formatos_ipywidgets_v7_y_v8(tmp_path):
+    v7 = {"a.txt": {"content": b"uno"}, "../evil.txt": {"content": b"dos"}, "x.exe": {"content": b"no"}}
+    assert DM._save_uploaded(v7, tmp_path) == ["a.txt", "evil.txt"]  # sin rutas; omite formatos no soportados
+    v8 = ({"name": "b.md", "content": memoryview(b"tres")},)
+    assert DM._save_uploaded(v8, tmp_path) == ["b.md"] and (tmp_path / "b.md").read_bytes() == b"tres"
+    assert not (tmp_path.parent / "evil.txt").exists()
+
+
+# ---- modos «solo documentos» de plan_mode
+def _carpeta_con_plano_y_doc(tmp_path):
+    shutil.copy(Path(__file__).resolve().parents[1] / "samples" / "plano_ejemplo.pdf", tmp_path / "plano_ejemplo.pdf")
+    (tmp_path / "memoria.txt").write_text("texto de la memoria", encoding="utf-8")
+    import pymupdf
+    im = pymupdf.open(); im.new_page(width=100, height=100).insert_text((10, 50), "x")
+    pix = im[0].get_pixmap(); pix.save(str(tmp_path / "foto.png"))
+
+
+def test_plan_mode_skip_revisa_solo_documentos(tmp_path):
+    _carpeta_con_plano_y_doc(tmp_path)
+    llm = _Rec(vision=True)
+    res = d.review_folder(tmp_path, tmp_path / "out", d.ReviewConfig(plan_mode="skip"), llm=llm)
+    assert [r["documento"] for r in res["revisiones"]] == ["memoria.txt"]
+    assert set(res["omitidos"]) == {"plano_ejemplo.pdf", "foto.png"}
+    assert all(b["type"] == "text" for call in llm.calls for b in call)  # nunca se enviaron imágenes
+
+
+def test_plan_mode_never_lee_todo_pdf_como_documento_e_ignora_imagenes(tmp_path):
+    _carpeta_con_plano_y_doc(tmp_path)
+    llm = _Rec(vision=True)
+    res = d.review_folder(tmp_path, tmp_path / "out", d.ReviewConfig(plan_mode="never"), llm=llm)
+    assert sorted(r["documento"] for r in res["revisiones"]) == ["memoria.txt", "plano_ejemplo.pdf"]
+    assert set(res["omitidos"]) == {"foto.png"}
+
+
+def test_solo_planos_con_skip_da_error_claro(tmp_path):
+    shutil.copy(Path(__file__).resolve().parents[1] / "samples" / "plano_ejemplo.pdf", tmp_path / "plano_ejemplo.pdf")
+    try:
+        d.review_folder(tmp_path, tmp_path / "out", d.ReviewConfig(plan_mode="skip"), llm=_Rec(vision=False))
+        assert False
+    except FileNotFoundError as e:
+        assert "plano_ejemplo.pdf" in str(e)

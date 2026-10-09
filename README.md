@@ -39,6 +39,20 @@ Formatos: planos PDF/PNG/JPG (visión), PDF (nativo con Claude; texto extraído 
 5. **Cuota gratuita:** puede ser muy baja (p. ej. 20 peticiones por día por modelo). Cada documento, cada hoja de plano y cada pregunta del chat gasta una. Si se agota, el agente cambia solo a otro modelo «flash» disponible (cada modelo tiene su propia cuota) o, si no hay otro, dice en cuánto tiempo vuelve. Facturación en AI Studio (con límite de gasto) elimina el tope y excluye el uso de tus datos para mejorar productos.
 6. En el plan gratuito los límites son bajos y cambian (el agente espera y reintenta ante errores 429), y Google puede usar los datos enviados para mejorar sus productos: no lo uses con documentos confidenciales sin activar facturación.
 
+## Administrar documentos y revisar solo documentos
+`doc_manager.py` (`DocFolder`) trabaja sobre una carpeta de trabajo (`/kaggle/working/documentos`), porque los datasets de Kaggle son de solo lectura:
+```python
+docs = DocFolder()
+docs.add("documento-1")                 # copia los documentos de un dataset (nombre, URL o carpeta); varios a la vez
+docs.add("/kaggle/input/x/a.pdf", "/kaggle/input/x/b.docx")
+docs.upload()                           # botón para subir archivos desde tu computador
+docs.replace("viejo.pdf", "nuevo.pdf")  # reemplazar uno por otro
+docs.remove("*.xlsx")                   # borrar (admite comodines)
+docs.list(); docs.clear(confirm=True)
+```
+Para cambiar un archivo dentro de un dataset de Kaggle, créale una nueva versión desde su página (⋮ → New version).
+**Solo documentos:** `ReviewConfig(plan_mode="skip")` omite (con aviso) los PDF que parecen planos y las imágenes; `plan_mode="never"` lee todo PDF como documento de texto e ignora las imágenes. Los notebooks vienen con `"skip"`.
+
 ## Planos de ingeniería (PDF impresos desde DWG)
 `plan_review.py` revisa **cada hoja mirando su imagen**: vista general, cajetín ampliado y 4 cuadrantes ampliados, más el texto vectorial del PDF (si el CAD lo imprimió como texto). Entrega por hoja: datos del cajetín (n° de plano, revisión, escala, responsables…) y hallazgos según `checklist_planos.md` (cajetín, control de revisiones, escala, cotas y cadenas que no cierran, cortes/detalles sin referencia, simbología y notas, lista de materiales, legibilidad). En multi-hoja compara numeración y revisiones entre planos.
 - Detección automática: PDF de formato ≥ A3 o con «plano/lámina/dwg» en el nombre (`ReviewConfig(plan_mode="always")` para forzar; `"never"` para desactivar). También acepta PNG/JPG/TIF.

@@ -308,8 +308,9 @@ class DocChat:
         self.history.append((question, answer))
         return answer
 
-    def summarize(self, doc: str | None = None, window_chars: int = 9000) -> str:
-        """Resumen de un documento (o de todos). Documentos largos: resumen por tramos y luego resumen final."""
+    def summarize(self, doc: str | None = None, window_chars: int = 14000) -> str:
+        """Resumen de un documento (o de todos). Documentos largos: resumen por tramos y luego resumen final.
+        Muestra el avance; con un modelo local puede tardar varios minutos en documentos largos."""
         names = [doc] if doc else list(self.texts)
         missing = [n for n in names if n not in self.texts]
         if missing:
@@ -318,12 +319,19 @@ class DocChat:
         for n in names:
             text = self.texts[n]
             parts = [text[i:i + window_chars] for i in range(0, len(text), window_chars)] or [""]
-            sums = [self.llm.generate_text(SUMMARY_SYSTEM, f"Documento «{n}», parte {i} de {len(parts)}:\n\n{t}\n\n"
-                                           "Resume esta parte en viñetas concisas.") for i, t in enumerate(parts, 1)]
+            sums = []
+            for i, t in enumerate(parts, 1):
+                print(f"  Resumiendo «{n}»: parte {i} de {len(parts)} ...", flush=True)
+                sums.append(self.llm.generate_text(
+                    SUMMARY_SYSTEM, f"Documento «{n}», parte {i} de {len(parts)}:\n\n{t}\n\n"
+                    "Resume esta parte en un máximo de 8 viñetas concisas."))
             joined = "\n".join(sums)
             if len(parts) > 1:
-                joined = self.llm.generate_text(SUMMARY_SYSTEM, f"Integra estos resúmenes parciales de «{n}» en un solo "
-                                                "resumen estructurado:\n\n" + joined)
+                print(f"  Integrando el resumen de «{n}» ...", flush=True)
+                joined = self.llm.generate_text(
+                    SUMMARY_SYSTEM, f"Integra estos resúmenes parciales de «{n}» en un solo resumen estructurado "
+                    "(objetivo, datos y criterios clave, resultados y conclusiones, normas citadas, puntos pendientes), "
+                    "de máximo una página:\n\n" + joined)
             partials.append(f"## {n}\n{joined}")
         return "\n\n".join(partials)
 

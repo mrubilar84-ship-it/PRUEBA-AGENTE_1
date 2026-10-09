@@ -502,3 +502,11 @@ def test_solo_planos_con_skip_da_error_claro(tmp_path):
         assert False
     except FileNotFoundError as e:
         assert "plano_ejemplo.pdf" in str(e)
+
+
+def test_chat_handle_comandos(tmp_path):
+    chat, Fake = _fake_chat(tmp_path)
+    assert chat._handle("/docs") == "Documentos cargados: mem.txt, otro.txt"
+    assert "AISC" in chat._handle("¿Qué norma se usa?") and chat.history
+    assert "mem.txt" in chat._handle("/resumen mem.txt")
+    assert chat._handle("/reset") == "Conversación reiniciada." and chat.history == []

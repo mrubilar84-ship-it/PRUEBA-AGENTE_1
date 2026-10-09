@@ -330,17 +330,51 @@ class DocChat:
     def reset(self) -> None:
         self.history.clear()
 
+    def _handle(self, text: str) -> str:
+        """Interpreta lo escrito por el usuario: pregunta, o comando (/resumen [archivo], /reset, /docs)."""
+        text = text.strip()
+        if text == "/reset":
+            self.reset()
+            return "Conversación reiniciada."
+        if text == "/docs":
+            return "Documentos cargados: " + (", ".join(self.texts) or "ninguno")
+        if text.startswith("/resumen"):
+            return self.summarize(text[8:].strip() or None)
+        return self.ask(text)
+
+    def ui(self):
+        """Caja de preguntas con botones en el notebook (si no se ve, usa chat.ask('...') o chat.repl())."""
+        import ipywidgets as w
+        from IPython.display import display
+
+        box = w.Textarea(placeholder="Escribe tu pregunta sobre los documentos...", layout=w.Layout(width="95%", height="80px"))
+        ask_b = w.Button(description="Preguntar", button_style="primary", icon="question")
+        sum_b = w.Button(description="Resumen de todos los documentos", icon="file-text")
+        rst_b = w.Button(description="Nueva conversación", icon="refresh")
+        out = w.Output()
+
+        def run(cmd):
+            with out:
+                print("⏳ pensando...")
+                try:
+                    ans = self._handle(cmd)
+                except Exception as e:  # mostrar el error sin romper la caja
+                    ans = f"Error: {type(e).__name__}: {e}"
+                out.clear_output()
+                print(ans)
+
+        ask_b.on_click(lambda _: box.value.strip() and run(box.value))
+        sum_b.on_click(lambda _: run("/resumen"))
+        rst_b.on_click(lambda _: run("/reset"))
+        display(w.VBox([box, w.HBox([ask_b, sum_b, rst_b]), out]))
+
     def repl(self) -> None:
-        """Chat interactivo en el notebook. Comandos: /resumen [archivo], /reset, /salir."""
-        print("Pregunta lo que quieras sobre los documentos. /resumen [archivo], /reset, /salir")
+        """Chat interactivo en el notebook. Comandos: /resumen [archivo], /reset, /docs, /salir."""
+        print("Pregunta lo que quieras sobre los documentos. /resumen [archivo], /reset, /docs, /salir")
         while True:
             q = input("\nTú: ").strip()
             if not q:
                 continue
             if q == "/salir":
                 break
-            if q == "/reset":
-                self.reset(); print("Conversación reiniciada."); continue
-            if q.startswith("/resumen"):
-                print(self.summarize(q[8:].strip() or None)); continue
-            print("\nAgente:", self.ask(q))
+            print("\nAgente:", self._handle(q))
